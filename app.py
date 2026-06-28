@@ -75,6 +75,109 @@ def _show_uploaded_files(files):
     st.success(f"✅ {len(files)} file(s) uploaded successfully.")
 
 
+def _render_ocr_report(label: str, pages: list):
+    """Feature 1: per-page OCR confidence table, summary, warnings, and export."""
+    from docdiff.ocr import (
+        classify_confidence, summarize_confidence, build_ocr_report_excel,
+    )
+
+    st.subheader(f"OCR Confidence Report — {label}")
+    st.table([
+        {
+            "Page": f"Page {p['page']}",
+            "Confidence": f"{p['confidence']:.0f}%",
+            "Status": classify_confidence(p["confidence"]),
+        }
+        for p in pages
+    ])
+
+    s = summarize_confidence(pages)
+    cols = st.columns(4)
+    cols[0].metric("Total pages", s["total_pages"])
+    cols[1].metric("Average confidence", f"{s['average']:.0f}%")
+    if s["lowest"]:
+        cols[2].metric("Lowest page",
+                       f"Pg {s['lowest']['page']} · {s['lowest']['confidence']:.0f}%")
+    if s["highest"]:
+        cols[3].metric("Highest page",
+                       f"Pg {s['highest']['page']} · {s['highest']['confidence']:.0f}%")
+
+    # Warnings (both can apply, per the spec's two thresholds).
+    if any(p["confidence"] < 75 for p in pages):
+        st.warning("⚠ Some pages have low OCR confidence and should be manually reviewed.")
+    if any(p["confidence"] < 60 for p in pages):
+        st.error("⚠ Critical OCR quality issues detected.")
+
+    st.download_button(
+        f"⬇️ Download OCR Confidence Report ({label})",
+        data=build_ocr_report_excel(pages),
+        file_name=f"ocr_confidence_{label.lower()}.xlsx",
+        mime=XLSX_MIME,
+        key=f"ocr_dl_{label}",
+    )
+
+
+def _copy_button(text: str, key: str = "copy"):
+    """A 'Copy Summary' button that copies `text` to the clipboard (client-side JS,
+    with an execCommand fallback for restricted iframes)."""
+    import json
+    import streamlit.components.v1 as components
+
+    payload = json.dumps(text)
+    components.html(
+        f"""
+        <button id="{key}_btn" style="padding:8px 16px;border:none;border-radius:6px;
+            background:#1F2937;color:#fff;cursor:pointer;font-size:14px;">
+            📋 Copy Summary</button>
+        <span id="{key}_msg" style="margin-left:10px;color:#15803d;font-size:13px;"></span>
+        <script>
+          const txt = {payload};
+          document.getElementById("{key}_btn").onclick = async () => {{
+            try {{
+              await navigator.clipboard.writeText(txt);
+            }} catch (e) {{
+              const ta = document.createElement("textarea");
+              ta.value = txt; document.body.appendChild(ta); ta.select();
+              document.execCommand("copy"); ta.remove();
+            }}
+            document.getElementById("{key}_msg").innerText = "Copied!";
+          }};
+        </script>
+        """,
+        height=48,
+    )
+
+
+def _render_executive_summary(changes):
+    """Feature 2: business-friendly summary of the differences (rule-based)."""
+    from docdiff.summary import summarize_changes, summary_to_text
+
+    summary = summarize_changes(changes)
+
+    st.subheader("🧾 Executive Summary")
+    st.markdown(f"**{summary['total']} differences detected.**")
+
+    sections = [
+        ("commercial", "Commercial Changes"),
+        ("legal", "Legal Changes"),
+        ("operational", "Operational Changes"),
+        ("risks", "⚠️ Risk Indicators"),
+    ]
+    any_shown = False
+    for key, title in sections:
+        bullets = summary.get(key, [])
+        if bullets:
+            any_shown = True
+            st.markdown(f"**{title}**")
+            st.markdown("\n".join(f"- {b}" for b in bullets))
+
+    if not any_shown:
+        st.caption("No commercial, legal, or operational changes were identified "
+                   "beyond minor wording.")
+
+    _copy_button(summary_to_text(summary), key="exec_summary")
+
+
 def main():
     """Pick a tool from the sidebar and show it."""
     with st.sidebar:
@@ -150,6 +253,8 @@ def render_compare():
             st.warning(f"**{label}:** {x.note}")
         else:
             st.caption(f"{label}: {x.note}")
+        if x.ocr_pages:
+            _render_ocr_report(label, x.ocr_pages)
 
     with st.spinner("Splitting into clauses…"):
         old_segs = segment(old_x.text)
@@ -197,6 +302,9 @@ def _render_results(changes, old_segs, new_segs, show_formatting):
     if not visible:
         st.success("No material changes found. 🎉")
         return
+
+    # ---------- Executive summary (business-friendly, rule-based) ----------
+    _render_executive_summary(visible)
 
     # ---------- Export ----------
     st.download_button(
