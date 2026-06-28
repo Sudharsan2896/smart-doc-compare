@@ -30,11 +30,22 @@ def extract(file_bytes: bytes, filename: str) -> ExtractResult:
         return _extract_pdf(file_bytes)
     if name.endswith(".docx"):
         return _extract_docx(file_bytes)
+    if name.endswith(".xlsx"):
+        return _extract_xlsx(file_bytes)
+    if name.endswith((".txt", ".md", ".markdown")):
+        return _extract_text(file_bytes, name)
     if name.endswith(".doc"):
         raise ValueError(
             "Old-style .doc files aren't supported. Please save as .docx or PDF."
         )
-    raise ValueError(f"Unsupported file type: {filename!r}. Upload a PDF or .docx.")
+    if name.endswith(".xls"):
+        raise ValueError(
+            "Old-style .xls files aren't supported. Please save as .xlsx."
+        )
+    raise ValueError(
+        f"Unsupported file type: {filename!r}. "
+        "Upload a PDF, Word (.docx), Excel (.xlsx), text (.txt) or Markdown (.md) file."
+    )
 
 
 def _extract_pdf(file_bytes: bytes) -> ExtractResult:
@@ -87,3 +98,40 @@ def _extract_docx(file_bytes: bytes) -> ExtractResult:
         " (including simple tables)." if document.tables else "."
     )
     return ExtractResult(text=text, kind="docx", looks_scanned=False, note=note)
+
+
+def _extract_xlsx(file_bytes: bytes) -> ExtractResult:
+    import openpyxl
+
+    # data_only=True returns calculated VALUES (not formulas) so numbers compare
+    # correctly. read_only=True keeps memory low on the free host.
+    wb = openpyxl.load_workbook(io.BytesIO(file_bytes), data_only=True, read_only=True)
+
+    lines: list[str] = []
+    for ws in wb.worksheets:
+        if len(wb.worksheets) > 1:
+            lines.append(f"[Sheet: {ws.title}]")
+        for row in ws.iter_rows(values_only=True):
+            # Each row becomes one line: "cell | cell | cell" (blanks dropped).
+            cells = [str(c).strip() for c in row if c is not None and str(c).strip()]
+            if cells:
+                lines.append(" | ".join(cells))
+
+    text = "\n".join(lines).strip()
+    note = f"Read Excel (.xlsx): {len(wb.worksheets)} sheet(s), one row per line."
+    return ExtractResult(text=text, kind="xlsx", looks_scanned=False, note=note)
+
+
+def _extract_text(file_bytes: bytes, name: str) -> ExtractResult:
+    # Plain text and Markdown are already text — just decode the bytes. We try
+    # UTF-8 first (the modern default) and fall back to Latin-1 so older files
+    # never crash the app.
+    try:
+        text = file_bytes.decode("utf-8")
+    except UnicodeDecodeError:
+        text = file_bytes.decode("latin-1", errors="replace")
+
+    kind = "md" if name.endswith((".md", ".markdown")) else "txt"
+    label = "Markdown" if kind == "md" else "plain text"
+    return ExtractResult(text=text.strip(), kind=kind, looks_scanned=False,
+                         note=f"Read {label} file.")
