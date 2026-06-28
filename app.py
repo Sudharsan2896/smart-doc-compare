@@ -82,12 +82,13 @@ def render_compare():
             help="Hide trivial spacing/punctuation differences by default.",
         )
         st.divider()
-        st.caption("Supported files: PDF, Word (.docx), Excel (.xlsx), "
-                   "CSV (.csv), text (.txt), Markdown (.md). "
-                   "Scanned PDFs (OCR) and the optional AI summary come later.")
+        st.caption("Supported files: PDF (incl. scanned, via OCR), Word (.docx), "
+                   "Excel (.xlsx), CSV (.csv), text (.txt), Markdown (.md), and "
+                   "images (.png/.jpg/.tiff, read via OCR).")
 
     # ---------------- File uploaders ----------------
-    file_types = ["pdf", "docx", "xlsx", "csv", "txt", "md"]
+    file_types = ["pdf", "docx", "xlsx", "csv", "txt", "md",
+                  "png", "jpg", "jpeg", "tiff", "tif", "bmp"]
     col1, col2 = st.columns(2)
     with col1:
         old_file = st.file_uploader("Original document", type=file_types, key="old")
@@ -102,7 +103,7 @@ def render_compare():
         return
 
     # ---------------- Pipeline ----------------
-    with st.spinner("Reading documents…"):
+    with st.spinner("Reading documents… (scanned files are OCR'd, which can take a moment)"):
         old_x = extract(old_file.getvalue(), old_file.name)
         new_x = extract(new_file.getvalue(), new_file.name)
 
@@ -117,8 +118,9 @@ def render_compare():
         new_segs = segment(new_x.text)
 
     if not old_segs or not new_segs:
-        st.error("Couldn't find any text to compare. If these are scanned PDFs, "
-                 "OCR support is coming in a later version.")
+        st.error("Couldn't find any text to compare. If these are scanned PDFs or "
+                 "images, the scan may be too low-quality for OCR to read — try a "
+                 "clearer copy.")
         return
 
     with st.spinner("Loading the local meaning model (first run downloads ~90 MB)…"):

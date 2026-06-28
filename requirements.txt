@@ -15,3 +15,8 @@ openpyxl>=3.1         # writes the .xlsx change report
 
 # --- Converters (PDF -> Word) ---
 pdf2docx>=0.5         # converts digital PDFs into editable Word .docx
+PyMuPDF>=1.24         # renders PDF pages to images (used by OCR); also pulled by pdf2docx
+
+# --- OCR (reading scanned PDFs / images) ---
+pytesseract>=0.3.10   # Python bridge to the Tesseract OCR engine (engine via packages.txt)
+Pillow>=10.0          # image handling for OCR
