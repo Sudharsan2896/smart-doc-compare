@@ -39,30 +39,48 @@ def pdf_to_word(pdf_bytes: bytes) -> bytes:
             return f.read()
 
 
-def word_tables_to_excel(docx_bytes: bytes) -> tuple[bytes, int]:
+def word_tables_to_excel(
+    docx_bytes: bytes, separate_sheets: bool = True
+) -> tuple[bytes, int]:
     """
     Extract every table from a Word .docx into an Excel workbook.
 
-    Each Word table becomes its own sheet ("Table 1", "Table 2", …). Returns the
-    Excel file's bytes plus the number of tables found (0 if the document has none).
+    `separate_sheets` controls the layout:
+        True  -> each Word table gets its own sheet ("Table 1", "Table 2", …)
+        False -> all tables stacked on ONE sheet, each under a "Table N" label
+                 with a blank spacer row between them.
+
+    Returns the Excel file's bytes plus the number of tables found (0 if none).
     """
     import docx  # python-docx
     from openpyxl import Workbook
 
     document = docx.Document(io.BytesIO(docx_bytes))
+    tables = document.tables
+    count = len(tables)
+
     wb = Workbook()
     wb.remove(wb.active)  # drop the default blank sheet; we add our own
-
-    count = 0
-    for i, table in enumerate(document.tables, start=1):
-        ws = wb.create_sheet(title=f"Table {i}")  # sheet names stay well under 31 chars
-        for row in table.rows:
-            ws.append([cell.text.strip() for cell in row.cells])
-        count += 1
 
     if count == 0:
         ws = wb.create_sheet(title="No tables found")
         ws.append(["No tables were found in this Word document."])
+
+    elif separate_sheets:
+        # One sheet per table. Sheet names stay well under Excel's 31-char limit.
+        for i, table in enumerate(tables, start=1):
+            ws = wb.create_sheet(title=f"Table {i}")
+            for row in table.rows:
+                ws.append([cell.text.strip() for cell in row.cells])
+
+    else:
+        # All tables on a single sheet, each labelled and separated by a blank row.
+        ws = wb.create_sheet(title="All tables")
+        for i, table in enumerate(tables, start=1):
+            ws.append([f"Table {i}"])
+            for row in table.rows:
+                ws.append([cell.text.strip() for cell in row.cells])
+            ws.append([])  # blank spacer row between tables
 
     buffer = io.BytesIO()
     wb.save(buffer)
