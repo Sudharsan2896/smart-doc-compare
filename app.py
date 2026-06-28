@@ -61,11 +61,11 @@ def main():
         )
         st.divider()
         st.caption("Supported files: PDF, Word (.docx), Excel (.xlsx), "
-                   "text (.txt), Markdown (.md). "
+                   "CSV (.csv), text (.txt), Markdown (.md). "
                    "Scanned PDFs (OCR) and the optional AI summary come later.")
 
     # ---------------- File uploaders ----------------
-    file_types = ["pdf", "docx", "xlsx", "txt", "md"]
+    file_types = ["pdf", "docx", "xlsx", "csv", "txt", "md"]
     col1, col2 = st.columns(2)
     with col1:
         old_file = st.file_uploader("Original document", type=file_types, key="old")
