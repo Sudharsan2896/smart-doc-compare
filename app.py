@@ -17,7 +17,7 @@ from docdiff.segment import segment
 from docdiff.align import align
 from docdiff.compare import compare_pairs, Change
 from docdiff.export import changes_to_excel
-from docdiff.convert import pdf_to_word, word_tables_to_excel
+from docdiff.convert import pdf_to_word, extract_word_tables, build_tables_excel
 from docdiff.reconcile import list_columns, reconcile
 
 
@@ -41,6 +41,38 @@ CATEGORY_STYLE = {
 def _warm_model():
     from docdiff.align import _load_model
     return _load_model()
+
+
+def _human_size(num_bytes: int) -> str:
+    """Format a byte count as a friendly size, e.g. '912 KB' or '1.4 MB'."""
+    size = float(num_bytes or 0)
+    for unit in ("B", "KB", "MB", "GB"):
+        if size < 1024 or unit == "GB":
+            return f"{size:.0f} {unit}" if unit == "B" else f"{size:.1f} {unit}"
+        size /= 1024
+    return f"{size:.1f} GB"
+
+
+def _show_uploaded_files(files):
+    """Show an 'Uploaded Files' panel (name / type / size) + a success message.
+
+    Accepts a list that may contain None entries (for not-yet-filled uploaders);
+    those are skipped. The drag-and-drop uploaders themselves are Streamlit's
+    built-in file_uploader, which already supports both drag-drop and Browse.
+    """
+    files = [f for f in files if f is not None]
+    if not files:
+        return
+    st.markdown("#### Uploaded Files")
+    st.table([
+        {
+            "File Name": f.name,
+            "File Type": (f.name.rsplit(".", 1)[-1].upper() if "." in f.name else "—"),
+            "File Size": _human_size(getattr(f, "size", 0)),
+        }
+        for f in files
+    ])
+    st.success(f"✅ {len(files)} file(s) uploaded successfully.")
 
 
 def main():
@@ -98,6 +130,8 @@ def render_compare():
         old_file = st.file_uploader("Original document", type=file_types, key="old")
     with col2:
         new_file = st.file_uploader("Revised document", type=file_types, key="new")
+
+    _show_uploaded_files([old_file, new_file])
 
     if not (old_file and new_file):
         st.info("⬆️ Upload both documents to begin.")
@@ -211,6 +245,8 @@ def render_pdf_to_word():
         st.info("⬆️ Upload a PDF to convert.")
         return
 
+    _show_uploaded_files([pdf_file])
+
     if not st.button("Convert to Word", type="primary"):
         return
 
@@ -238,8 +274,9 @@ def render_pdf_to_word():
 def render_word_to_excel():
     st.title("📊 Word tables → Excel")
     st.caption(
-        "Pull every table out of a Word (.docx) document into an Excel workbook — "
-        "each table becomes its own sheet."
+        "Extract tables from a Word (.docx) document into Excel. **Preview** the "
+        "tables first, choose which to keep, rename their sheets, and optionally "
+        "merge tables together before exporting."
     )
 
     docx_file = st.file_uploader("Upload a Word .docx", type=["docx"], key="word2excel")
@@ -247,36 +284,94 @@ def render_word_to_excel():
         st.info("⬆️ Upload a Word document to extract its tables.")
         return
 
+    _show_uploaded_files([docx_file])
+
+    # --- Read the tables for preview ---
+    try:
+        tables = extract_word_tables(docx_file.getvalue())
+    except Exception as e:  # noqa: BLE001
+        st.error("Sorry, that Word file couldn't be read. Make sure it's a "
+                 "real .docx file (not an old .doc).")
+        st.caption(f"Technical detail: {e}")
+        return
+
+    if not tables:
+        st.warning("No tables were found in that document.")
+        return
+
     layout = st.radio(
         "How should the tables be saved?",
         ["Separate sheet per table", "All tables on one sheet"],
-        help="'Separate sheet per table' puts each table on its own Excel tab. "
-             "'All tables on one sheet' stacks them on a single tab, each under a "
-             "'Table N' label.",
+        help="'Separate sheet per table' puts each kept table on its own Excel tab. "
+             "'All tables on one sheet' stacks them on a single tab, each under its "
+             "sheet name as a label.",
     )
     separate_sheets = layout.startswith("Separate")
 
-    if not st.button("Extract tables to Excel", type="primary"):
+    # --- Preview each table with keep / sheet-name / merge controls ---
+    import pandas as pd
+    st.subheader("Tables detected")
+
+    keeps: list[bool] = []
+    names: list[str] = []
+    merges: list[bool] = []
+    for i, rows in enumerate(tables, start=1):
+        n_rows = len(rows)
+        n_cols = len(rows[0]) if rows else 0
+        st.markdown(f"**Table {i}** · {n_rows} rows × {n_cols} columns")
+        if rows:
+            st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+        else:
+            st.caption("(this table is empty)")
+
+        c1, c2, c3 = st.columns([1, 2, 2])
+        keep = c1.checkbox("Keep", value=True, key=f"w2e_keep_{i}")
+        name = c2.text_input("Sheet name", value=f"Table_{i}", key=f"w2e_name_{i}")
+        merge = c3.checkbox(
+            "Merge with previous", value=False, key=f"w2e_merge_{i}",
+            disabled=(i == 1),
+            help="Add this table's rows onto the previous kept table, in the same sheet.",
+        )
+        keeps.append(keep)
+        names.append(name)
+        merges.append(merge)
+        st.divider()
+
+    # --- Turn the user's choices into export specs (apply keep, then merge) ---
+    specs: list[dict] = []
+    for i, rows in enumerate(tables):
+        if not keeps[i]:
+            continue
+        if merges[i] and specs:
+            specs[-1]["rows"].extend(rows)          # merge into previous kept group
+        else:
+            specs.append({"name": names[i].strip() or f"Table_{i + 1}",
+                          "rows": list(rows)})
+
+    total_found = len(tables)
+    total_selected = sum(1 for k in keeps if k)
+    a, b = st.columns(2)
+    a.metric("Total tables found", total_found)
+    b.metric("Total tables selected", total_selected)
+
+    if total_selected == 0:
+        st.warning("No tables selected. Tick at least one 'Keep' to export.")
         return
 
-    with st.spinner("Extracting tables…"):
+    if not st.button("Generate Excel", type="primary"):
+        return
+
+    with st.spinner("Building Excel…"):
         try:
-            xlsx_bytes, n_tables = word_tables_to_excel(
-                docx_file.getvalue(), separate_sheets=separate_sheets
-            )
+            xlsx_bytes = build_tables_excel(specs, separate_sheets=separate_sheets)
         except Exception as e:  # noqa: BLE001
-            st.error("Sorry, that Word file couldn't be read. Make sure it's a "
-                     "real .docx file (not an old .doc).")
+            st.error("Something went wrong while building the Excel file.")
             st.caption(f"Technical detail: {e}")
             return
 
-    if n_tables == 0:
-        st.warning("No tables were found in that document. The Excel file still "
-                   "downloaded, with a note inside.")
-    else:
-        st.success(f"Found {n_tables} table(s). Download your Excel file below.")
-
     out_name = docx_file.name.rsplit(".", 1)[0] + "_tables.xlsx"
+    unit = "sheet" if separate_sheets else "section"
+    st.success(f"Done! Exporting {len(specs)} {unit}(s) from {total_selected} kept table(s).")
     st.download_button(
         "⬇️ Download Excel (.xlsx)",
         data=xlsx_bytes,
@@ -302,6 +397,8 @@ def render_reconcile():
     with c2:
         new_file = st.file_uploader("Revised (new) data — CSV or Excel",
                                     type=["csv", "xlsx"], key="rec_new")
+
+    _show_uploaded_files([old_file, new_file])
 
     if not (old_file and new_file):
         st.info("⬆️ Upload both files to begin.")
