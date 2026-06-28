@@ -179,24 +179,33 @@ def _render_executive_summary(changes):
 
 
 def main():
-    """Pick a tool from the sidebar and show it."""
+    """Pick a toolkit section and a tool from the sidebar, then show it."""
     with st.sidebar:
         st.title("🧰 Document Toolkit")
-        tool = st.radio(
-            "Choose a tool",
-            ["📑 Compare documents", "📄 PDF → Word", "📊 Word tables → Excel",
-             "🔀 Reconcile data"],
-        )
+        section = st.radio("Toolkit", ["Document Tools", "Procurement Toolkit"])
+        st.divider()
+        if section == "Document Tools":
+            tool = st.radio(
+                "Choose a tool",
+                ["📑 Compare documents", "📄 PDF → Word",
+                 "📊 Word tables → Excel", "🔀 Reconcile data"],
+            )
+        else:
+            tool = st.radio(
+                "Choose a tool",
+                ["🧮 Quote Comparison", "✅ PO vs Invoice Validator"],
+            )
         st.divider()
 
-    if tool.startswith("📑"):
-        render_compare()
-    elif tool.startswith("📄"):
-        render_pdf_to_word()
-    elif tool.startswith("📊"):
-        render_word_to_excel()
-    else:
-        render_reconcile()
+    dispatch = {
+        "📑 Compare documents": render_compare,
+        "📄 PDF → Word": render_pdf_to_word,
+        "📊 Word tables → Excel": render_word_to_excel,
+        "🔀 Reconcile data": render_reconcile,
+        "🧮 Quote Comparison": render_quote_comparison,
+        "✅ PO vs Invoice Validator": render_po_validator,
+    }
+    dispatch[tool]()
 
 
 def render_compare():
@@ -575,6 +584,254 @@ def render_reconcile():
         data=xlsx_bytes,
         file_name="reconciliation_report.xlsx",
         mime=XLSX_MIME,
+    )
+
+
+def render_quote_comparison():
+    st.title("🧮 Quote Comparison")
+    st.caption(
+        "Compare quotations from multiple vendors and find the most economical "
+        "option. Upload one Excel/CSV per vendor, then map the columns."
+    )
+
+    from docdiff.procurement import load_table, compare_quotes, build_quote_excel
+
+    files = st.file_uploader(
+        "Upload vendor quotes (one file per vendor)",
+        type=["xlsx", "csv"], accept_multiple_files=True, key="quote_files",
+    )
+    if not files:
+        st.info("⬆️ Upload at least two vendor quote files to begin.")
+        return
+
+    _show_uploaded_files(files)
+    if len(files) < 2:
+        st.warning("Upload at least two vendor files to compare.")
+        return
+
+    # Per-vendor column mapping.
+    vendors = []
+    for i, f in enumerate(files):
+        try:
+            df = load_table(f.getvalue(), f.name)
+        except Exception as e:  # noqa: BLE001
+            st.error(f"Couldn't read **{f.name}**: {e}")
+            return
+        cols = list(df.columns)
+        if not cols:
+            st.error(f"**{f.name}** has no columns.")
+            return
+        vendor_name = f.name.rsplit(".", 1)[0]
+        with st.expander(f"Columns for **{vendor_name}**", expanded=True):
+            item_col = st.selectbox("Item Description column", cols, key=f"q_item_{i}")
+            price_col = st.selectbox("Unit Price column", cols,
+                                     index=min(1, len(cols) - 1), key=f"q_price_{i}")
+            qty_choice = st.selectbox("Quantity column (optional)",
+                                      ["— none —"] + cols, key=f"q_qty_{i}")
+        vendors.append({
+            "name": vendor_name, "df": df,
+            "item_col": item_col, "price_col": price_col,
+            "qty_col": None if qty_choice == "— none —" else qty_choice,
+        })
+
+    st.divider()
+    mode_label = st.radio(
+        "Item matching",
+        ["Exact (same wording)", "Smart (meaning-based)"],
+        horizontal=True,
+        help="Exact matches identical item text (ignoring case/spacing). Smart "
+             "also matches differently-worded descriptions of the same item, e.g. "
+             "'HP Laptop 15' and 'Laptop, HP 15-inch'.",
+    )
+    fuzzy = mode_label.startswith("Smart")
+    threshold = 0.75
+    if fuzzy:
+        threshold = st.slider(
+            "Smart-match sensitivity", min_value=0.55, max_value=0.95,
+            value=0.75, step=0.05,
+            help="Higher = descriptions must be more similar to be treated as the "
+                 "same item (fewer merges). Lower = matches looser wordings.",
+        )
+
+    if not st.button("Compare quotes", type="primary"):
+        return
+
+    model = None
+    if fuzzy:
+        with st.spinner("Loading the meaning model (first run downloads ~90 MB)…"):
+            model = _warm_model()
+
+    with st.spinner("Comparing…"):
+        result = compare_quotes(
+            vendors,
+            match_mode="fuzzy" if fuzzy else "exact",
+            fuzzy_threshold=threshold,
+            model=model,
+        )
+
+    # ---- Comparison Summary ----
+    st.subheader("Comparison Summary")
+    m = st.columns(4)
+    m[0].metric("Total items compared", result["total_items"])
+    m[1].metric("Lowest overall vendor", result["lowest_overall"] or "—")
+    m[2].metric("Optimal basket", f"{result['optimal_total']:,.2f}")
+    m[3].metric("Potential savings", f"{result['potential_savings']:,.2f}")
+
+    if result["incomplete_vendors"]:
+        st.warning("These vendors didn't quote every item, so their totals aren't "
+                   "directly comparable and they're excluded from 'lowest overall': "
+                   + ", ".join(result["incomplete_vendors"]) + ".")
+
+    import pandas as pd
+    vt = pd.DataFrame([
+        {"Vendor": n,
+         "Total quote value": round(result["vendor_totals"][n], 2),
+         "Items won": result["items_won"][n],
+         "Avg item price": round(result["averages"][n], 2)}
+        for n in result["vendors"]
+    ])
+    st.dataframe(vt, use_container_width=True, hide_index=True)
+    st.caption("Total procurement savings opportunity (vs most expensive complete "
+               f"vendor): **{result['savings_opportunity']:,.2f}**")
+
+    # ---- Item Comparison (green=lowest, red=highest, yellow=missing) ----
+    st.subheader("Item Comparison")
+    st.dataframe(_style_quote(result), use_container_width=True)
+
+    # Transparency: show which differently-worded items were merged (smart mode).
+    if fuzzy:
+        merged = [r for r in result["rows"] if len(r.get("_aliases", [])) > 1]
+        if merged:
+            with st.expander(f"🔎 Items matched across different wordings ({len(merged)})"):
+                for r in merged:
+                    st.markdown(f"- **{r['Item']}** ← " + " · ".join(r["_aliases"]))
+        else:
+            st.caption("No differently-worded items were merged at this sensitivity.")
+
+    st.download_button(
+        "⬇️ Download Excel report (Summary / Item Comparison / Savings Analysis)",
+        data=build_quote_excel(result),
+        file_name="quote_comparison.xlsx", mime=XLSX_MIME,
+    )
+
+
+def _style_quote(result):
+    """Build the item-comparison DataFrame with green/red/yellow cell colours."""
+    import pandas as pd
+
+    names = result["vendors"]
+    rows = result["rows"]
+    df = pd.DataFrame([
+        {"Item": r["Item"], "Quantity": r["Quantity"],
+         **{n: r.get(n) for n in names},
+         "Lowest Vendor": r.get("Lowest Vendor"),
+         "Lowest Price": r.get("Lowest Price")}
+        for r in rows
+    ])
+
+    def colour_row(row):
+        styles = [""] * len(df.columns)
+        r = rows[row.name]
+        low, high = r.get("Lowest Price"), r.get("_high_price")
+        for n in names:
+            ci = df.columns.get_loc(n)
+            val = r.get(n)
+            if val is None:
+                styles[ci] = "background-color:#FFEB9C"        # missing
+            elif low is not None and val == low:
+                styles[ci] = "background-color:#C6EFCE"        # lowest
+            elif high is not None and val == high and high != low:
+                styles[ci] = "background-color:#FFC7CE"        # highest
+        return styles
+
+    return df.style.apply(colour_row, axis=1)
+
+
+def render_po_validator():
+    st.title("✅ PO vs Invoice Validator")
+    st.caption(
+        "Validate a vendor invoice against the approved purchase order, field by "
+        "field. Phase 1 supports Excel/CSV; PDF support is planned for a later phase."
+    )
+
+    from docdiff.procurement import (
+        load_table, validate_po_invoice, build_validation_excel, PO_FIELDS,
+    )
+
+    c1, c2 = st.columns(2)
+    with c1:
+        po_file = st.file_uploader("Purchase Order (Excel/CSV)",
+                                   type=["xlsx", "csv"], key="po_file")
+    with c2:
+        inv_file = st.file_uploader("Invoice (Excel/CSV)",
+                                    type=["xlsx", "csv"], key="inv_file")
+
+    _show_uploaded_files([po_file, inv_file])
+    if not (po_file and inv_file):
+        st.info("⬆️ Upload both the PO and the invoice to begin.")
+        return
+
+    try:
+        po_df = load_table(po_file.getvalue(), po_file.name)
+        inv_df = load_table(inv_file.getvalue(), inv_file.name)
+    except Exception as e:  # noqa: BLE001
+        st.error(f"Couldn't read a file: {e}")
+        return
+
+    po_cols = ["— not present —"] + list(po_df.columns)
+    inv_cols = ["— not present —"] + list(inv_df.columns)
+
+    st.subheader("Map the fields")
+    po_map, inv_map = {}, {}
+    for field in PO_FIELDS:
+        a, b = st.columns(2)
+        pc = a.selectbox(f"PO · {field}", po_cols, key=f"po_{field}")
+        ic = b.selectbox(f"Invoice · {field}", inv_cols, key=f"inv_{field}")
+        po_map[field] = None if pc.startswith("—") else pc
+        inv_map[field] = None if ic.startswith("—") else ic
+
+    if not st.button("Validate", type="primary"):
+        return
+
+    result = validate_po_invoice(po_df, inv_df, po_map, inv_map)
+
+    # ---- Validation Summary ----
+    st.subheader("Validation Summary")
+    m = st.columns(5)
+    m[0].metric("Fields checked", result["total"])
+    m[1].metric("Matched", result["matched"])
+    m[2].metric("Mismatched", result["mismatched"])
+    m[3].metric("Missing", result["missing"])
+    m[4].metric("Match %", f"{result['match_pct']:.0f}%")
+
+    # ---- Compliance Score ----
+    rating = result["rating"]
+    colour = {"Excellent": "#15803d", "Good": "#16a34a",
+              "Review Required": "#ca8a04", "High Risk": "#dc2626"}[rating]
+    st.subheader("Compliance Score")
+    st.markdown(
+        f"<div style='font-size:30px;font-weight:700;color:{colour}'>"
+        f"{result['score']:.0f}% — {rating}</div>",
+        unsafe_allow_html=True,
+    )
+
+    # ---- Exception Report (colour-coded status) ----
+    st.subheader("Exception Report")
+    import pandas as pd
+    df = pd.DataFrame(result["results"])
+
+    def colour_status(row):
+        bg = {"Match": "#C6EFCE", "Mismatch": "#FFC7CE",
+              "Missing": "#FFEB9C"}.get(row["Status"], "")
+        return [f"background-color:{bg}" if bg else ""] * len(df.columns)
+
+    st.dataframe(df.style.apply(colour_status, axis=1),
+                 use_container_width=True, hide_index=True)
+
+    st.download_button(
+        "⬇️ Download validation report (Summary / Detailed / Exceptions)",
+        data=build_validation_excel(result),
+        file_name="po_invoice_validation.xlsx", mime=XLSX_MIME,
     )
 
 
