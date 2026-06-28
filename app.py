@@ -18,6 +18,7 @@ from docdiff.align import align
 from docdiff.compare import compare_pairs, Change
 from docdiff.export import changes_to_excel
 from docdiff.convert import pdf_to_word, word_tables_to_excel
+from docdiff.reconcile import list_columns, reconcile
 
 
 st.set_page_config(page_title="Document Toolkit", layout="wide")
@@ -48,7 +49,8 @@ def main():
         st.title("🧰 Document Toolkit")
         tool = st.radio(
             "Choose a tool",
-            ["📑 Compare documents", "📄 PDF → Word", "📊 Word tables → Excel"],
+            ["📑 Compare documents", "📄 PDF → Word", "📊 Word tables → Excel",
+             "🔀 Reconcile data"],
         )
         st.divider()
 
@@ -56,8 +58,10 @@ def main():
         render_compare()
     elif tool.startswith("📄"):
         render_pdf_to_word()
-    else:
+    elif tool.startswith("📊"):
         render_word_to_excel()
+    else:
+        render_reconcile()
 
 
 def render_compare():
@@ -277,6 +281,94 @@ def render_word_to_excel():
         "⬇️ Download Excel (.xlsx)",
         data=xlsx_bytes,
         file_name=out_name,
+        mime=XLSX_MIME,
+    )
+
+
+def render_reconcile():
+    st.title("🔀 Reconcile data")
+    st.caption(
+        "Compare an **old** export against a **new** one, record by record, keyed "
+        "on an ID column. Finds records that are **missing**, **changed**, or "
+        "**newly added**, and exports a full Excel report. Works with CSV and "
+        "Excel (.xlsx) files (reconciliation needs tabular data with an ID column, "
+        "so PDFs/Word/images don't apply here)."
+    )
+
+    c1, c2 = st.columns(2)
+    with c1:
+        old_file = st.file_uploader("Original (old) data — CSV or Excel",
+                                    type=["csv", "xlsx"], key="rec_old")
+    with c2:
+        new_file = st.file_uploader("Revised (new) data — CSV or Excel",
+                                    type=["csv", "xlsx"], key="rec_new")
+
+    if not (old_file and new_file):
+        st.info("⬆️ Upload both files to begin.")
+        return
+
+    # Read the old file's columns so the user can pick the ID column from a list.
+    try:
+        cols = list_columns(old_file.getvalue(), old_file.name)
+    except Exception as e:  # noqa: BLE001
+        st.error("Couldn't read the original file as a table. Make sure it's a "
+                 "proper CSV or Excel file.")
+        st.caption(f"Technical detail: {e}")
+        return
+
+    if not cols:
+        st.error("The original file has no columns to compare.")
+        return
+
+    default_idx = cols.index("name") if "name" in cols else 0
+    id_column = st.selectbox(
+        "Which column is the unique ID?", cols, index=default_idx,
+        help="The column that uniquely identifies each record (e.g. an ID or "
+             "reference number).",
+    )
+
+    with st.expander("Advanced options"):
+        prefix = st.text_input(
+            "ID prefix to ignore in the new file (optional)", value="",
+            help="If IDs in the new file were given a prefix (e.g. 'OLD-'), enter "
+                 "it so those records still match the old file.",
+        )
+        exclude = st.multiselect(
+            "Columns to ignore when comparing values", cols, default=[],
+            help="Pick columns whose differences you don't care about (e.g. "
+                 "timestamps). Common system fields are ignored automatically.",
+        )
+
+    if not st.button("Reconcile", type="primary"):
+        return
+
+    with st.spinner("Reconciling…"):
+        try:
+            xlsx_bytes, summary = reconcile(
+                old_file.getvalue(), old_file.name,
+                new_file.getvalue(), new_file.name,
+                id_column=id_column, prefix_to_strip=prefix.strip(),
+                exclude_columns=exclude,
+            )
+        except ValueError as e:
+            st.error(str(e))
+            return
+        except Exception as e:  # noqa: BLE001
+            st.error("Something went wrong while reconciling the two files.")
+            st.caption(f"Technical detail: {e}")
+            return
+
+    st.success("Done! Download the full report below.")
+    m = st.columns(4)
+    m[0].metric("Records in old", summary.get("Total in Old", 0))
+    m[1].metric("Records in new", summary.get("Total in New", 0))
+    m[2].metric("Missing in new", summary.get("Missing in New", 0))
+    m[3].metric("Field mismatches", summary.get("Total Field-Level Mismatches", 0))
+
+    st.download_button(
+        "⬇️ Download reconciliation report (.xlsx)",
+        data=xlsx_bytes,
+        file_name="reconciliation_report.xlsx",
         mime=XLSX_MIME,
     )
 

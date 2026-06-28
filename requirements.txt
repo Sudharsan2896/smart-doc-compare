@@ -10,8 +10,9 @@ sentence-transformers>=2.7   # the local embedding model lives here
 scipy>=1.11                  # optimal clause-to-clause matching
 numpy>=1.24
 
-# --- Export ---
-openpyxl>=3.1         # writes the .xlsx change report
+# --- Export & tabular reconcile ---
+openpyxl>=3.1         # writes the .xlsx reports / reads .xlsx
+pandas>=2.0           # tabular reconcile engine (also a Streamlit dependency)
 
 # --- Converters (PDF -> Word) ---
 pdf2docx>=0.5         # converts digital PDFs into editable Word .docx
