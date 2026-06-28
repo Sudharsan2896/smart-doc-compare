@@ -4,9 +4,9 @@ Procurement Toolkit — a SEPARATE module of procurement-specific tools.
     compare_quotes / build_quote_excel        -> multi-vendor quote comparison
     validate_po_invoice / build_validation_excel -> PO vs invoice field validation
 
-It reuses docdiff.reconcile.read_table() to load CSV/Excel into DataFrames, and
-follows the same openpyxl export pattern as the rest of the app. Nothing here
-touches the existing document tools.
+It reuses docdiff.tables.file_to_dataframe() to load CSV/Excel/Word/PDF/image
+tables into DataFrames, and follows the same openpyxl export pattern as the rest
+of the app. Nothing here touches the existing document tools.
 """
 
 from __future__ import annotations
@@ -14,23 +14,13 @@ from __future__ import annotations
 import io
 import re
 
-from .reconcile import read_table  # reuse the existing CSV/XLSX loader
+from .tables import file_to_dataframe
 
 
 # --- Shared helpers -----------------------------------------------------------
 def load_table(file_bytes: bytes, filename: str):
-    """Load a procurement file into a DataFrame.
-
-    Phase 1 supports CSV and Excel. PDF is a planned future phase — the hook is
-    here so it can be added without changing callers: just handle the .pdf branch.
-    """
-    name = (filename or "").lower()
-    if name.endswith(".pdf"):
-        raise ValueError(
-            "PDF support for procurement files is planned for a future phase. "
-            "Please upload Excel (.xlsx) or CSV for now."
-        )
-    return read_table(file_bytes, filename)
+    """Load a procurement file into a DataFrame."""
+    return file_to_dataframe(file_bytes, filename)
 
 
 def _to_num(value):
