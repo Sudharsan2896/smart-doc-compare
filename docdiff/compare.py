@@ -125,15 +125,22 @@ def _diff_html(old_text: str, new_text: str) -> str:
     for tag, i1, i2, j1, j2 in sm.get_opcodes():
         old_chunk = _esc(" ".join(old_words[i1:i2]))
         new_chunk = _esc(" ".join(new_words[j1:j2]))
+        # Dark text colours are set explicitly so the diff stays readable on the
+        # light highlight backgrounds regardless of the app's light/dark theme.
+        deleted = (
+            f"<span style='background:#ffd7d5;color:#b91c1c;"
+            f"text-decoration:line-through'>{old_chunk}</span>"
+        )
+        inserted = f"<span style='background:#cdffd8;color:#15803d'>{new_chunk}</span>"
         if tag == "equal":
             out.append(old_chunk)
         elif tag == "delete":
-            out.append(f"<span style='background:#ffd7d5;text-decoration:line-through'>{old_chunk}</span>")
+            out.append(deleted)
         elif tag == "insert":
-            out.append(f"<span style='background:#cdffd8'>{new_chunk}</span>")
+            out.append(inserted)
         elif tag == "replace":
-            out.append(f"<span style='background:#ffd7d5;text-decoration:line-through'>{old_chunk}</span>")
-            out.append(f"<span style='background:#cdffd8'>{new_chunk}</span>")
+            out.append(deleted)
+            out.append(inserted)
     return " ".join(x for x in out if x)
 
 
