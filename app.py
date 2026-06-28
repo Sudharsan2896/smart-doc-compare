@@ -60,15 +60,17 @@ def main():
             help="Hide trivial spacing/punctuation differences by default.",
         )
         st.divider()
-        st.caption("MVP scope: digital PDF / .docx contracts. "
+        st.caption("Supported files: PDF, Word (.docx), Excel (.xlsx), "
+                   "text (.txt), Markdown (.md). "
                    "Scanned PDFs (OCR) and the optional AI summary come later.")
 
     # ---------------- File uploaders ----------------
+    file_types = ["pdf", "docx", "xlsx", "txt", "md"]
     col1, col2 = st.columns(2)
     with col1:
-        old_file = st.file_uploader("Original document", type=["pdf", "docx"], key="old")
+        old_file = st.file_uploader("Original document", type=file_types, key="old")
     with col2:
-        new_file = st.file_uploader("Revised document", type=["pdf", "docx"], key="new")
+        new_file = st.file_uploader("Revised document", type=file_types, key="new")
 
     if not (old_file and new_file):
         st.info("⬆️ Upload both documents to begin.")
