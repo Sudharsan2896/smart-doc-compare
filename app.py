@@ -25,6 +25,10 @@ st.set_page_config(page_title="Document Toolkit", layout="wide")
 
 DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+PROCUREMENT_TABLE_TYPES = [
+    "xlsx", "csv", "docx", "pdf",
+    "png", "jpg", "jpeg", "tif", "tiff", "bmp", "webp",
+]
 
 # A colour + label for each change category, so the eye finds the loud stuff fast.
 CATEGORY_STYLE = {
@@ -73,6 +77,11 @@ def _show_uploaded_files(files):
         for f in files
     ])
     st.success(f"✅ {len(files)} file(s) uploaded successfully.")
+
+
+def _render_table_preview(label: str, df, rows: int = 25):
+    with st.expander(f"Extracted table preview - {label}", expanded=False):
+        st.dataframe(df.head(rows), use_container_width=True, hide_index=True)
 
 
 def _render_ocr_report(label: str, pages: list):
@@ -591,14 +600,14 @@ def render_quote_comparison():
     st.title("🧮 Quote Comparison")
     st.caption(
         "Compare quotations from multiple vendors and find the most economical "
-        "option. Upload one Excel/CSV per vendor, then map the columns."
+        "option. Upload one file per vendor, then map the columns."
     )
 
     from docdiff.procurement import load_table, compare_quotes, build_quote_excel
 
     files = st.file_uploader(
         "Upload vendor quotes (one file per vendor)",
-        type=["xlsx", "csv"], accept_multiple_files=True, key="quote_files",
+        type=PROCUREMENT_TABLE_TYPES, accept_multiple_files=True, key="quote_files",
     )
     if not files:
         st.info("⬆️ Upload at least two vendor quote files to begin.")
@@ -622,6 +631,7 @@ def render_quote_comparison():
             st.error(f"**{f.name}** has no columns.")
             return
         vendor_name = f.name.rsplit(".", 1)[0]
+        _render_table_preview(vendor_name, df)
         with st.expander(f"Columns for **{vendor_name}**", expanded=True):
             item_col = st.selectbox("Item Description column", cols, key=f"q_item_{i}")
             price_col = st.selectbox("Unit Price column", cols,
@@ -751,7 +761,7 @@ def render_po_validator():
     st.title("✅ PO vs Invoice Validator")
     st.caption(
         "Validate a vendor invoice against the approved purchase order, field by "
-        "field. Phase 1 supports Excel/CSV; PDF support is planned for a later phase."
+        "field across Excel, CSV, Word, PDF, and image uploads."
     )
 
     from docdiff.procurement import (
@@ -760,11 +770,11 @@ def render_po_validator():
 
     c1, c2 = st.columns(2)
     with c1:
-        po_file = st.file_uploader("Purchase Order (Excel/CSV)",
-                                   type=["xlsx", "csv"], key="po_file")
+        po_file = st.file_uploader("Purchase Order",
+                                   type=PROCUREMENT_TABLE_TYPES, key="po_file")
     with c2:
-        inv_file = st.file_uploader("Invoice (Excel/CSV)",
-                                    type=["xlsx", "csv"], key="inv_file")
+        inv_file = st.file_uploader("Invoice",
+                                    type=PROCUREMENT_TABLE_TYPES, key="inv_file")
 
     _show_uploaded_files([po_file, inv_file])
     if not (po_file and inv_file):
@@ -777,6 +787,12 @@ def render_po_validator():
     except Exception as e:  # noqa: BLE001
         st.error(f"Couldn't read a file: {e}")
         return
+
+    p1, p2 = st.columns(2)
+    with p1:
+        _render_table_preview("Purchase Order", po_df)
+    with p2:
+        _render_table_preview("Invoice", inv_df)
 
     po_cols = ["— not present —"] + list(po_df.columns)
     inv_cols = ["— not present —"] + list(inv_df.columns)
