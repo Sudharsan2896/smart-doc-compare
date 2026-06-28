@@ -32,6 +32,8 @@ def extract(file_bytes: bytes, filename: str) -> ExtractResult:
         return _extract_docx(file_bytes)
     if name.endswith(".xlsx"):
         return _extract_xlsx(file_bytes)
+    if name.endswith(".csv"):
+        return _extract_csv(file_bytes)
     if name.endswith((".txt", ".md", ".markdown")):
         return _extract_text(file_bytes, name)
     if name.endswith(".doc"):
@@ -43,8 +45,8 @@ def extract(file_bytes: bytes, filename: str) -> ExtractResult:
             "Old-style .xls files aren't supported. Please save as .xlsx."
         )
     raise ValueError(
-        f"Unsupported file type: {filename!r}. "
-        "Upload a PDF, Word (.docx), Excel (.xlsx), text (.txt) or Markdown (.md) file."
+        f"Unsupported file type: {filename!r}. Upload a PDF, Word (.docx), "
+        "Excel (.xlsx), CSV (.csv), text (.txt) or Markdown (.md) file."
     )
 
 
@@ -120,6 +122,29 @@ def _extract_xlsx(file_bytes: bytes) -> ExtractResult:
     text = "\n".join(lines).strip()
     note = f"Read Excel (.xlsx): {len(wb.worksheets)} sheet(s), one row per line."
     return ExtractResult(text=text, kind="xlsx", looks_scanned=False, note=note)
+
+
+def _extract_csv(file_bytes: bytes) -> ExtractResult:
+    import csv
+
+    # utf-8-sig also strips a leading byte-order mark that Excel-exported CSVs
+    # often add; Latin-1 is a last-resort fallback so nothing ever crashes.
+    try:
+        text_data = file_bytes.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        text_data = file_bytes.decode("latin-1", errors="replace")
+
+    lines: list[str] = []
+    for row in csv.reader(io.StringIO(text_data)):
+        # Each row becomes one line: "cell | cell | cell" (blanks dropped), so
+        # numbers in the cells are still picked up and compared.
+        cells = [c.strip() for c in row if c is not None and c.strip()]
+        if cells:
+            lines.append(" | ".join(cells))
+
+    text = "\n".join(lines).strip()
+    note = f"Read CSV: {len(lines)} row(s), one row per line."
+    return ExtractResult(text=text, kind="csv", looks_scanned=False, note=note)
 
 
 def _extract_text(file_bytes: bytes, name: str) -> ExtractResult:
