@@ -17,9 +17,13 @@ from docdiff.segment import segment
 from docdiff.align import align
 from docdiff.compare import compare_pairs, Change
 from docdiff.export import changes_to_excel
+from docdiff.convert import pdf_to_word, word_tables_to_excel
 
 
-st.set_page_config(page_title="Smart Document Comparison", layout="wide")
+st.set_page_config(page_title="Document Toolkit", layout="wide")
+
+DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
 # A colour + label for each change category, so the eye finds the loud stuff fast.
 CATEGORY_STYLE = {
@@ -39,6 +43,24 @@ def _warm_model():
 
 
 def main():
+    """Pick a tool from the sidebar and show it."""
+    with st.sidebar:
+        st.title("🧰 Document Toolkit")
+        tool = st.radio(
+            "Choose a tool",
+            ["📑 Compare documents", "📄 PDF → Word", "📊 Word tables → Excel"],
+        )
+        st.divider()
+
+    if tool.startswith("📑"):
+        render_compare()
+    elif tool.startswith("📄"):
+        render_pdf_to_word()
+    else:
+        render_word_to_excel()
+
+
+def render_compare():
     st.title("📑 Smart Document Comparison")
     st.caption(
         "Compares two contracts by **meaning**, not just text. Matches clauses "
@@ -169,6 +191,81 @@ def _render_results(changes, old_segs, new_segs, show_formatting):
                 f"border-radius:6px'>{c.diff_html}</div>",
                 unsafe_allow_html=True,
             )
+
+
+def render_pdf_to_word():
+    st.title("📄 PDF → Word")
+    st.caption(
+        "Turn a **digital** PDF into an editable Word (.docx) file, keeping text, "
+        "layout and tables. (Scanned/photographed PDFs need OCR, coming later.)"
+    )
+
+    pdf_file = st.file_uploader("Upload a PDF", type=["pdf"], key="pdf2word")
+    if not pdf_file:
+        st.info("⬆️ Upload a PDF to convert.")
+        return
+
+    if not st.button("Convert to Word", type="primary"):
+        return
+
+    with st.spinner("Converting… (large PDFs can take a minute)"):
+        try:
+            docx_bytes = pdf_to_word(pdf_file.getvalue())
+        except Exception as e:  # noqa: BLE001 — show a friendly message, not a crash
+            st.error(
+                "Sorry, that PDF couldn't be converted. It may be scanned (an "
+                "image rather than real text), password-protected, or corrupted."
+            )
+            st.caption(f"Technical detail: {e}")
+            return
+
+    out_name = pdf_file.name.rsplit(".", 1)[0] + ".docx"
+    st.success("Done! Download your Word file below.")
+    st.download_button(
+        "⬇️ Download Word (.docx)",
+        data=docx_bytes,
+        file_name=out_name,
+        mime=DOCX_MIME,
+    )
+
+
+def render_word_to_excel():
+    st.title("📊 Word tables → Excel")
+    st.caption(
+        "Pull every table out of a Word (.docx) document into an Excel workbook — "
+        "each table becomes its own sheet."
+    )
+
+    docx_file = st.file_uploader("Upload a Word .docx", type=["docx"], key="word2excel")
+    if not docx_file:
+        st.info("⬆️ Upload a Word document to extract its tables.")
+        return
+
+    if not st.button("Extract tables to Excel", type="primary"):
+        return
+
+    with st.spinner("Extracting tables…"):
+        try:
+            xlsx_bytes, n_tables = word_tables_to_excel(docx_file.getvalue())
+        except Exception as e:  # noqa: BLE001
+            st.error("Sorry, that Word file couldn't be read. Make sure it's a "
+                     "real .docx file (not an old .doc).")
+            st.caption(f"Technical detail: {e}")
+            return
+
+    if n_tables == 0:
+        st.warning("No tables were found in that document. The Excel file still "
+                   "downloaded, with a note inside.")
+    else:
+        st.success(f"Found {n_tables} table(s). Download your Excel file below.")
+
+    out_name = docx_file.name.rsplit(".", 1)[0] + "_tables.xlsx"
+    st.download_button(
+        "⬇️ Download Excel (.xlsx)",
+        data=xlsx_bytes,
+        file_name=out_name,
+        mime=XLSX_MIME,
+    )
 
 
 if __name__ == "__main__":
