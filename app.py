@@ -243,12 +243,23 @@ def render_word_to_excel():
         st.info("⬆️ Upload a Word document to extract its tables.")
         return
 
+    layout = st.radio(
+        "How should the tables be saved?",
+        ["Separate sheet per table", "All tables on one sheet"],
+        help="'Separate sheet per table' puts each table on its own Excel tab. "
+             "'All tables on one sheet' stacks them on a single tab, each under a "
+             "'Table N' label.",
+    )
+    separate_sheets = layout.startswith("Separate")
+
     if not st.button("Extract tables to Excel", type="primary"):
         return
 
     with st.spinner("Extracting tables…"):
         try:
-            xlsx_bytes, n_tables = word_tables_to_excel(docx_file.getvalue())
+            xlsx_bytes, n_tables = word_tables_to_excel(
+                docx_file.getvalue(), separate_sheets=separate_sheets
+            )
         except Exception as e:  # noqa: BLE001
             st.error("Sorry, that Word file couldn't be read. Make sure it's a "
                      "real .docx file (not an old .doc).")
