@@ -12,7 +12,7 @@ scanned PDF, we detect that we got almost no text back and tell them clearly.
 from __future__ import annotations
 
 import io
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 @dataclass
@@ -21,6 +21,9 @@ class ExtractResult:
     kind: str            # "pdf" or "docx"
     looks_scanned: bool  # True if we suspect this is a scanned image PDF
     note: str            # human-readable status message
+    # Per-page OCR confidence, populated only when OCR ran, e.g.
+    # [{"page": 1, "confidence": 98.0}, ...]. Empty for non-OCR files.
+    ocr_pages: list = field(default_factory=list)
 
 
 def extract(file_bytes: bytes, filename: str) -> ExtractResult:
@@ -74,14 +77,14 @@ def _extract_pdf(file_bytes: bytes) -> ExtractResult:
         return ExtractResult(text=text, kind="pdf", looks_scanned=False, note=note)
 
     # --- Scanned PDF: try OCR (reading text out of the page images). ---
-    from .ocr import tesseract_available, ocr_pdf_bytes
+    from .ocr import tesseract_available, ocr_pdf_with_confidence
 
     if tesseract_available():
-        ocr_text = ocr_pdf_bytes(file_bytes)
+        ocr_text, ocr_pages = ocr_pdf_with_confidence(file_bytes)
         if len(ocr_text) > len(text):
-            note = f"Scanned PDF read with OCR ({len(pages_text)} page(s))."
+            note = f"Scanned PDF read with OCR ({len(ocr_pages)} page(s))."
             return ExtractResult(text=ocr_text, kind="pdf", looks_scanned=False,
-                                 note=note)
+                                 note=note, ocr_pages=ocr_pages)
 
     # OCR unavailable, or it found nothing useful.
     note = (
@@ -178,7 +181,7 @@ def _extract_text(file_bytes: bytes, name: str) -> ExtractResult:
 
 def _extract_image(file_bytes: bytes) -> ExtractResult:
     # An image is just a picture, so the only way to get text out is OCR.
-    from .ocr import tesseract_available, ocr_image_bytes
+    from .ocr import tesseract_available, ocr_image_with_confidence
 
     if not tesseract_available():
         raise ValueError(
@@ -186,8 +189,9 @@ def _extract_image(file_bytes: bytes) -> ExtractResult:
             "on this server."
         )
 
-    text = ocr_image_bytes(file_bytes)
+    text, ocr_pages = ocr_image_with_confidence(file_bytes)
     note = "Read image text with OCR."
     if not text:
         note = "OCR found no readable text in this image (it may be blank or unclear)."
-    return ExtractResult(text=text, kind="image", looks_scanned=False, note=note)
+    return ExtractResult(text=text, kind="image", looks_scanned=False, note=note,
+                         ocr_pages=ocr_pages)
