@@ -36,6 +36,8 @@ def extract(file_bytes: bytes, filename: str) -> ExtractResult:
         return _extract_csv(file_bytes)
     if name.endswith((".txt", ".md", ".markdown")):
         return _extract_text(file_bytes, name)
+    if name.endswith((".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp")):
+        return _extract_image(file_bytes)
     if name.endswith(".doc"):
         raise ValueError(
             "Old-style .doc files aren't supported. Please save as .docx or PDF."
@@ -46,7 +48,8 @@ def extract(file_bytes: bytes, filename: str) -> ExtractResult:
         )
     raise ValueError(
         f"Unsupported file type: {filename!r}. Upload a PDF, Word (.docx), "
-        "Excel (.xlsx), CSV (.csv), text (.txt) or Markdown (.md) file."
+        "Excel (.xlsx), CSV (.csv), text (.txt), Markdown (.md), or an image "
+        "(.png/.jpg/.tiff)."
     )
 
 
@@ -66,16 +69,27 @@ def _extract_pdf(file_bytes: bytes) -> ExtractResult:
     chars_per_page = len(text) / max(len(pages_text), 1)
     looks_scanned = chars_per_page < 50
 
-    if looks_scanned:
-        note = (
-            "This PDF appears to be SCANNED (little or no selectable text). "
-            "OCR isn't in this version yet, so comparison may be empty. "
-            "Use a digital PDF for now."
-        )
-    else:
+    if not looks_scanned:
         note = f"Read {len(pages_text)} page(s) of digital PDF text."
+        return ExtractResult(text=text, kind="pdf", looks_scanned=False, note=note)
 
-    return ExtractResult(text=text, kind="pdf", looks_scanned=looks_scanned, note=note)
+    # --- Scanned PDF: try OCR (reading text out of the page images). ---
+    from .ocr import tesseract_available, ocr_pdf_bytes
+
+    if tesseract_available():
+        ocr_text = ocr_pdf_bytes(file_bytes)
+        if len(ocr_text) > len(text):
+            note = f"Scanned PDF read with OCR ({len(pages_text)} page(s))."
+            return ExtractResult(text=ocr_text, kind="pdf", looks_scanned=False,
+                                 note=note)
+
+    # OCR unavailable, or it found nothing useful.
+    note = (
+        "This PDF appears to be SCANNED and OCR couldn't read it (the scan may be "
+        "low quality, or the OCR engine isn't available). Try a clearer scan or a "
+        "digital PDF."
+    )
+    return ExtractResult(text=text, kind="pdf", looks_scanned=True, note=note)
 
 
 def _extract_docx(file_bytes: bytes) -> ExtractResult:
@@ -160,3 +174,20 @@ def _extract_text(file_bytes: bytes, name: str) -> ExtractResult:
     label = "Markdown" if kind == "md" else "plain text"
     return ExtractResult(text=text.strip(), kind=kind, looks_scanned=False,
                          note=f"Read {label} file.")
+
+
+def _extract_image(file_bytes: bytes) -> ExtractResult:
+    # An image is just a picture, so the only way to get text out is OCR.
+    from .ocr import tesseract_available, ocr_image_bytes
+
+    if not tesseract_available():
+        raise ValueError(
+            "Image files need OCR to read, but the OCR engine isn't available "
+            "on this server."
+        )
+
+    text = ocr_image_bytes(file_bytes)
+    note = "Read image text with OCR."
+    if not text:
+        note = "OCR found no readable text in this image (it may be blank or unclear)."
+    return ExtractResult(text=text, kind="image", looks_scanned=False, note=note)
