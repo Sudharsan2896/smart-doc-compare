@@ -165,8 +165,8 @@ def _render_results(changes, old_segs, new_segs, show_formatting):
                 st.table(rows)
 
             st.markdown(
-                f"<div style='background:{color};padding:10px;border-radius:6px'>"
-                f"{c.diff_html}</div>",
+                f"<div style='background:{color};color:#1a1a1a;padding:10px;"
+                f"border-radius:6px'>{c.diff_html}</div>",
                 unsafe_allow_html=True,
             )
 
