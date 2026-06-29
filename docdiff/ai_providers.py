@@ -51,6 +51,16 @@ class AIProvider(ABC):
         """Optional richer narrative. Default: none (engine uses its own text)."""
         return ""
 
+    def reason(self, quotes: list[tuple]) -> str:
+        """Holistic, domain-agnostic reasoned comparison of all quotes.
+
+        `quotes`: list of (vendor_name, raw_text). Returns markdown analysis, or
+        "" if this provider can't truly reason (no LLM). Only a real LLM provider
+        overrides this — it's what produces analyst-quality output for any kind of
+        quotation (goods, hotels, services), not just the fixed field schema.
+        """
+        return ""
+
 
 # --- Heuristic (no-LLM) provider ---------------------------------------------
 _GST_RE = re.compile(r"\b\d{2}[A-Z]{5}\d{4}[A-Z]\d[A-Z\d]Z[A-Z\d]\b")
@@ -59,7 +69,29 @@ _DATE_RE = re.compile(
 _AMOUNT_RE = re.compile(r"(?:₹|rs\.?|inr)\s*([\d,]+(?:\.\d+)?)", re.I)
 _VENDOR_HINT_WORDS = ("ltd", "pvt", "private limited", "inc", "llp", "industries",
                       "enterprises", "technologies", "solar", "systems", "company",
-                      "corporation", "co.", "traders", "solutions")
+                      "corporation", "co.", "traders", "solutions",
+                      "hotel", "inn", "resort", "restaurant", "lodge")
+_GENERIC_SENDERS = ("general manager", "sales", "accounts", "front office manager",
+                    "reservations", "admin", "info", "marketing")
+
+
+def _guess_vendor(text: str, fallback: str) -> str:
+    """Best-effort vendor name from an emailed/prose quote."""
+    # 1. "Greetings from X" — very common in quote emails, gives clean names.
+    m = re.search(r"greetings\s+from\s+([^\n!.,]{3,50})", text, re.I)
+    if m:
+        return m.group(1).strip().strip("!.,")
+    # 2. Outlook "From <Name> <email>" — unless it's a generic role.
+    m = re.search(r"(?im)^\s*from\s+([A-Z][^\n<]{2,50}?)\s*<", text)
+    if m and m.group(1).strip().lower() not in _GENERIC_SENDERS:
+        return m.group(1).strip()
+    # 3. A line that looks like a company/venue name.
+    for line in text.splitlines():
+        s = line.strip()
+        if 3 < len(s) < 60 and any(w in s.lower() for w in _VENDOR_HINT_WORDS):
+            return s
+    # 4. Fall back to the filename.
+    return fallback
 
 
 def _first(pattern, text, group=1, flags=re.I):
@@ -76,14 +108,10 @@ def heuristic_extract(text: str, items_df, vendor_hint: str = "") -> dict:
     def put(field, value, conf):
         out[field] = {"value": value, "confidence": conf if value else 0.0}
 
-    # Vendor name: a line that looks like a company, else the filename hint.
-    vendor = None
-    for line in t.splitlines():
-        s = line.strip()
-        if 3 < len(s) < 60 and any(w in s.lower() for w in _VENDOR_HINT_WORDS):
-            vendor = s
-            break
-    put("Vendor Name", vendor or (vendor_hint or None), 0.85 if vendor else 0.5)
+    # Vendor name from the email/prose (e.g. "Greetings from X"), else filename.
+    vendor = _guess_vendor(t, vendor_hint)
+    strong = vendor and vendor != vendor_hint
+    put("Vendor Name", vendor or (vendor_hint or None), 0.85 if strong else 0.55)
 
     put("Quotation Number",
         _first(r"(?:quotation|quote|ref(?:erence)?|q\.?\s*no)[\s:.#\-]*([A-Z0-9][A-Z0-9\-/]{2,})", t),
@@ -205,6 +233,33 @@ class OllamaProvider(AIProvider):
                 "below, write a concise, professional recommendation (5-8 sentences) "
                 "for a procurement committee. Avoid jargon.\n\n" + context
             ).strip()
+        except Exception:
+            return ""
+
+    def reason(self, quotes: list[tuple]) -> str:
+        blocks = []
+        for i, (name, text) in enumerate(quotes, 1):
+            blocks.append(f"--- QUOTE {i} (file: {name}) ---\n{(text or '')[:4500]}")
+        prompt = (
+            "You are an experienced procurement analyst. Compare the vendor "
+            "quotations below like a professional and produce a committee-ready "
+            "note in markdown.\n\n"
+            "Do this:\n"
+            "1. Identify each vendor and what they are quoting.\n"
+            "2. Put COMPARABLE line items side by side (same product / room type / "
+            "plan / occupancy). Compute effective prices INCLUDING any taxes "
+            "stated (e.g. '2800+5%' = 2940).\n"
+            "3. For each comparable item, say which vendor is cheaper and by how "
+            "much (amount and %).\n"
+            "4. Note non-price differences: inclusions, availability/quantity, "
+            "warranty, validity, payment terms, location, and any missing info or "
+            "risks.\n"
+            "5. End with a clear recommendation of best overall value and why.\n"
+            "Be specific with numbers. Use short sections and bullet points.\n\n"
+            + "\n\n".join(blocks)
+        )
+        try:
+            return self._chat(prompt).strip()
         except Exception:
             return ""
 

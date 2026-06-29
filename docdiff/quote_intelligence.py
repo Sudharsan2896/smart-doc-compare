@@ -93,6 +93,7 @@ def analyze_quotes(files: list[tuple], provider) -> dict:
     files: list of (filename, file_bytes). Returns the full analysis bundle.
     """
     vendors = []
+    raw_quotes = []
     for filename, file_bytes in files:
         parsed = parse_quote_file(file_bytes, filename)
         vendor_hint = filename.rsplit(".", 1)[0]
@@ -103,13 +104,17 @@ def analyze_quotes(files: list[tuple], provider) -> dict:
             "file": filename,
             "fields": fields,
             "note": parsed["note"],
+            "text": parsed["text"],
             "total": _num(_val(fields, "Total Value")),
             "delivery_days": _days(_val(fields, "Delivery Timeline")),
             "warranty_months": _months(_val(fields, "Warranty Details")),
         })
+        raw_quotes.append((name, parsed["text"]))
 
     scores = _score_vendors(vendors)
     ranking = sorted(scores, key=lambda s: s["total_score"], reverse=True)
+    vendors_with_total = sum(1 for v in vendors if v["total"] is not None)
+
     analysis = {
         "vendors": vendors,
         "scores": scores,
@@ -119,6 +124,9 @@ def analyze_quotes(files: list[tuple], provider) -> dict:
         "risk": _risk(vendors),
         "low_confidence": _low_confidence(vendors),
         "provider_name": provider.name,
+        "vendors_with_total": vendors_with_total,
+        # Holistic LLM reasoning (empty string unless a real LLM provider is used).
+        "reasoned": provider.reason(raw_quotes),
     }
     analysis["recommendation"] = _recommendation(ranking, vendors, provider)
     return analysis

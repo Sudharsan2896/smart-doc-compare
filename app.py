@@ -665,10 +665,52 @@ def render_ai_quote_analysis():
 
     # 1) AI Summary
     with tabs[0]:
-        st.subheader("Recommendation")
-        st.markdown(analysis["recommendation"])
-        _copy_button(analysis["recommendation"], key="ai_reco")
+        n_vendors = len(analysis["vendors"])
+        weak = analysis["vendors_with_total"] < n_vendors
+
+        if analysis.get("reasoned"):
+            # A real LLM (Ollama) produced an analyst-style comparison.
+            st.subheader("AI Reasoned Analysis")
+            st.markdown(analysis["reasoned"])
+            _copy_button(analysis["reasoned"], key="ai_reason")
+        else:
+            st.subheader("Recommendation")
+            if weak:
+                st.warning(
+                    "⚠️ The rule-based engine couldn't reliably read prices from "
+                    "these documents — common for emailed/prose quotes (e.g. hotel "
+                    "tariffs written as text rather than a table). **The ranking "
+                    "below is not reliable for these files.** For genuine, "
+                    "analyst-quality reasoning, run this app on your computer with "
+                    "**Ollama** and a pulled model — see *How to get real AI "
+                    "reasoning* below. You can also read each quote's raw text "
+                    "below to compare manually."
+                )
+            st.markdown(analysis["recommendation"])
+            _copy_button(analysis["recommendation"], key="ai_reco")
+
+            with st.expander("ℹ️ How to get real AI reasoning (free, on your PC)"):
+                st.markdown(
+                    "1. Install **Ollama** from https://ollama.com (free).\n"
+                    "2. In a terminal run: `ollama pull llama3.1` "
+                    "(or a faster small model: `ollama pull llama3.2`).\n"
+                    "3. Run this app **locally** (`streamlit run app.py`) with the "
+                    "AI engine set to *Auto* and the model name matching what you "
+                    "pulled.\n\n"
+                    "Then this tab shows a full reasoned comparison — effective "
+                    "prices, cheaper-per-item, inclusions, risks, and a "
+                    "recommendation — for any kind of quote (goods, hotels, "
+                    "services). *(Ollama can't run on the free cloud host, so the "
+                    "cloud app always uses the rule-based engine.)*"
+                )
+
         st.divider()
+        with st.expander("📄 Raw text extracted from each quote"):
+            for v in analysis["vendors"]:
+                st.markdown(f"**{v['name']}** — _{v['file']}_")
+                st.text((v.get("text") or "(no text extracted)")[:3000])
+                st.divider()
+
         st.subheader("At a glance")
         rank_df = [{"Rank": i + 1, "Vendor": r["name"],
                     "Score (/100)": r["total_score"]}
