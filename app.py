@@ -202,7 +202,8 @@ def main():
         else:
             tool = st.radio(
                 "Choose a tool",
-                ["🧮 Quote Comparison", "✅ PO vs Invoice Validator"],
+                ["🤖 AI Quote Analysis", "🧮 Quote Comparison",
+                 "✅ PO vs Invoice Validator"],
             )
         st.divider()
 
@@ -211,6 +212,7 @@ def main():
         "📄 PDF → Word": render_pdf_to_word,
         "📊 Word tables → Excel": render_word_to_excel,
         "🔀 Reconcile data": render_reconcile,
+        "🤖 AI Quote Analysis": render_ai_quote_analysis,
         "🧮 Quote Comparison": render_quote_comparison,
         "✅ PO vs Invoice Validator": render_po_validator,
     }
@@ -594,6 +596,156 @@ def render_reconcile():
         file_name="reconciliation_report.xlsx",
         mime=XLSX_MIME,
     )
+
+
+def render_ai_quote_analysis():
+    st.title("🤖 AI Quote Analysis")
+    st.caption(
+        "Upload 2–10 vendor quotations in **any** format (PDF, Word, image, scanned). "
+        "The engine reads each one, extracts the key commercial terms, and produces a "
+        "procurement-style comparison, ranking, and recommendation — no need to "
+        "standardise the formats first."
+    )
+
+    from docdiff.ai_providers import (
+        OllamaProvider, LocalHeuristicProvider, QUOTE_FIELDS,
+    )
+    from docdiff.quote_intelligence import analyze_quotes, SCORE_WEIGHTS
+
+    # --- AI engine selection (auto-detect Ollama, else local rules) ---
+    engine = st.radio(
+        "AI engine", ["Auto (use Ollama if running)", "Local rules (no LLM)"],
+        horizontal=True,
+        help="Auto uses a local Ollama LLM when it's running on your computer "
+             "(richer reasoning); otherwise it uses the built-in rules engine, "
+             "which also works on the free cloud host.",
+    )
+    if engine.startswith("Auto"):
+        model = st.text_input("Ollama model (if running)", value="llama3.1",
+                              help="e.g. llama3.1, gemma3, qwen3 — must be pulled "
+                                   "in Ollama. Ignored if Ollama isn't running.")
+        ollama = OllamaProvider(model=model.strip() or "llama3.1")
+        if ollama.available():
+            provider = ollama
+            st.success(f"🟢 Ollama detected — using model **{ollama.model}**.")
+        else:
+            provider = LocalHeuristicProvider()
+            st.info("Ollama not running — using the built-in local rules engine.")
+    else:
+        provider = LocalHeuristicProvider()
+
+    files = st.file_uploader(
+        "Upload vendor quotations",
+        type=["pdf", "docx", "png", "jpg", "jpeg", "webp", "tiff", "tif", "bmp",
+              "xlsx", "csv"],
+        accept_multiple_files=True, key="ai_quote_files",
+    )
+    if not files:
+        st.info("⬆️ Upload at least two quotations to begin.")
+        return
+
+    _show_uploaded_files(files)
+    if len(files) < 2:
+        st.warning("Upload at least two quotations to compare.")
+        return
+
+    if not st.button("Analyze quotations", type="primary"):
+        return
+
+    with st.spinner("Reading and analyzing quotations… (scanned files are OCR'd; "
+                    "Ollama analysis can take a little longer)"):
+        analysis = analyze_quotes(
+            [(f.name, f.getvalue()) for f in files], provider
+        )
+
+    st.caption(f"Analysis engine: **{analysis['provider_name']}**")
+
+    tabs = st.tabs(["🧾 AI Summary", "💰 Commercial", "🔧 Technical",
+                    "⚠️ Risk", "🏆 Vendor Ranking"])
+
+    # 1) AI Summary
+    with tabs[0]:
+        st.subheader("Recommendation")
+        st.markdown(analysis["recommendation"])
+        _copy_button(analysis["recommendation"], key="ai_reco")
+        st.divider()
+        st.subheader("At a glance")
+        rank_df = [{"Rank": i + 1, "Vendor": r["name"],
+                    "Score (/100)": r["total_score"]}
+                   for i, r in enumerate(analysis["ranking"])]
+        st.table(rank_df)
+
+    # 2) Commercial
+    with tabs[1]:
+        st.subheader("Commercial Analysis")
+        for b in analysis["commercial"]:
+            st.markdown(f"- {b}")
+        st.divider()
+        st.subheader("Extracted commercial terms")
+        st.dataframe(_quote_fields_df(analysis,
+                     ["Total Value", "Payment Terms", "Delivery Timeline",
+                      "Warranty Details", "GST / Taxes", "Freight / Transport"]),
+                     use_container_width=True)
+
+    # 3) Technical
+    with tabs[2]:
+        st.subheader("Technical Analysis")
+        for b in analysis["technical"]:
+            st.markdown(f"- {b}")
+        st.divider()
+        st.subheader("Extracted details")
+        st.dataframe(_quote_fields_df(analysis,
+                     ["Quotation Number", "Quotation Date", "Validity Period",
+                      "Warranty Details", "Additional Terms"]),
+                     use_container_width=True)
+
+    # 4) Risk
+    with tabs[3]:
+        st.subheader("Procurement Risk Analysis")
+        for b in analysis["risk"]:
+            st.markdown(f"- {b}")
+        flags = analysis["low_confidence"]
+        st.divider()
+        st.subheader("Low-confidence extractions (verify manually)")
+        if flags:
+            st.dataframe([{"Vendor": f["vendor"], "Field": f["field"],
+                           "Value": f["value"],
+                           "Confidence": f"{f['confidence'] * 100:.0f}%"}
+                          for f in flags], use_container_width=True, hide_index=True)
+        else:
+            st.caption("No low-confidence fields — extractions look reliable.")
+
+    # 5) Vendor Ranking
+    with tabs[4]:
+        st.subheader("Weighted Procurement Score")
+        st.caption("Weights: " + ", ".join(
+            f"{k} {int(v * 100)}%" for k, v in SCORE_WEIGHTS.items()))
+        for i, r in enumerate(analysis["ranking"]):
+            medal = ["🥇", "🥈", "🥉"][i] if i < 3 else "•"
+            st.markdown(f"### {medal} {r['name']} — {r['total_score']:.0f}/100")
+            st.progress(min(int(r["total_score"]), 100))
+            cols = st.columns(len(r["components"]))
+            for c, (k, v) in zip(cols, r["components"].items()):
+                c.metric(k.split()[0], f"{v:.0f}")
+        st.divider()
+        st.dataframe(_quote_fields_df(analysis, QUOTE_FIELDS),
+                     use_container_width=True)
+
+
+def _quote_fields_df(analysis, fields):
+    """Build a fields×vendors table showing 'value (confidence%)'."""
+    import pandas as pd
+
+    data = {"Field": fields}
+    for v in analysis["vendors"]:
+        col = []
+        for f in fields:
+            cell = v["fields"].get(f) or {}
+            val = cell.get("value")
+            conf = cell.get("confidence", 0.0)
+            col.append(f"{val}  ({conf * 100:.0f}%)" if val else "—")
+        data[v["name"]] = col
+    return pd.DataFrame(data)
 
 
 def render_quote_comparison():
