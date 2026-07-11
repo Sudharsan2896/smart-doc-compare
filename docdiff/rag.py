@@ -238,18 +238,77 @@ class KnowledgeBase:
     def doc_names(self) -> list[str]:
         return sorted({c.source for c in self.chunks})
 
+    # --- portable save / load (safe JSON, no pickle) --------------------------
+    # We deliberately avoid pickle: a knowledge-base file can be uploaded by a
+    # user, and unpickling untrusted data can execute arbitrary code. JSON can't.
+    def to_bytes(self) -> bytes:
+        """Serialize the whole index to a portable, safe JSON blob. Chunks and the
+        lexical index are plain JSON; the numpy embeddings (if any) are stored as
+        base64-encoded .npy so a reloaded KB doesn't need re-embedding."""
+        import json
+        if not self._built:
+            self.build()
+        data = {
+            "version": 1,
+            "used_model": self.used_model,
+            "chunks": [{"text": c.text, "source": c.source,
+                        "chunk_id": c.chunk_id, "header": c.header}
+                       for c in self.chunks],
+            "idf": self._idf,
+            "chunk_vecs": [[vec, norm] for (vec, norm) in self._chunk_vecs],
+        }
+        if self.used_model and self._embeddings is not None:
+            try:
+                import base64
+                import io
+                import numpy as np
+                buf = io.BytesIO()
+                np.save(buf, self._embeddings)
+                data["embeddings_npy_b64"] = base64.b64encode(
+                    buf.getvalue()).decode("ascii")
+            except Exception:
+                pass  # embeddings are optional; lexical index still restores search
+        return json.dumps(data).encode("utf-8")
+
+    @classmethod
+    def from_bytes(cls, blob: bytes) -> "KnowledgeBase":
+        import json
+        data = json.loads(blob.decode("utf-8"))
+        kb = cls()
+        kb.chunks = [Chunk(c["text"], c["source"], int(c["chunk_id"]),
+                           c.get("header", ""))
+                     for c in data.get("chunks", [])]
+        kb._idf = data.get("idf", {})
+        kb._chunk_vecs = [(vec, float(norm))
+                          for vec, norm in data.get("chunk_vecs", [])]
+        kb.used_model = bool(data.get("used_model", False))
+        kb._embeddings = None
+        b64 = data.get("embeddings_npy_b64")
+        if b64:
+            try:
+                import base64
+                import io
+                import numpy as np
+                kb._embeddings = np.load(io.BytesIO(base64.b64decode(b64)))
+            except Exception:
+                # Can't restore embeddings here (no numpy) — the lexical index
+                # still works, so drop to keyword search rather than fail.
+                kb._embeddings = None
+                kb.used_model = False
+        elif kb.used_model:
+            kb.used_model = False  # marked embeddings but none stored → lexical
+        kb._built = True
+        return kb
+
     def save(self, path: str) -> None:
-        """Persist the whole index to disk (local use — the free cloud host has no
-        permanent disk). Pickle handles both the chunks and the numpy embeddings."""
-        import pickle
+        """Persist to disk (local use — the free cloud host has no permanent disk)."""
         with open(path, "wb") as f:
-            pickle.dump(self, f)
+            f.write(self.to_bytes())
 
     @staticmethod
     def load(path: str) -> "KnowledgeBase":
-        import pickle
         with open(path, "rb") as f:
-            return pickle.load(f)
+            return KnowledgeBase.from_bytes(f.read())
 
 
 def answer_question(kb: KnowledgeBase, question: str, provider, k: int = 5) -> dict:

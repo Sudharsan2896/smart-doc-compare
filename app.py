@@ -1162,15 +1162,41 @@ def render_rag():
             st.session_state.kb = KnowledgeBase()
             st.rerun()
 
+        st.divider()
+        st.caption("Or load a knowledge base you saved earlier (this host wipes "
+                   "memory between sessions, so save/load is how you keep one).")
+        kb_file = st.file_uploader("Load a saved knowledge base (.json)",
+                                   type=["json"], key="rag_kb_upload")
+        if st.button("Load knowledge base", key="rag_kb_load"):
+            if kb_file is not None:
+                try:
+                    st.session_state.kb = KnowledgeBase.from_bytes(kb_file.getvalue())
+                    st.success("Knowledge base loaded.")
+                    st.rerun()
+                except Exception as e:  # noqa: BLE001
+                    st.error(f"Couldn't load that file: {e}")
+            else:
+                st.info("Choose a saved .json knowledge base first.")
+
     if kb.is_empty():
         st.info("The knowledge base is empty. Add a few documents above — the three "
                 "quotes in **samples/quotes/** are a good way to try it.")
         return
 
     retrieval = "meaning-based embeddings" if kb.used_model else "keyword (TF-IDF)"
-    st.caption(f"📚 **{len(kb.doc_names())}** document(s), **{len(kb.chunks)}** "
-               f"passages indexed · retrieval: **{retrieval}**")
-    st.write("Indexed: " + ", ".join(f"`{d}`" for d in kb.doc_names()))
+    left, right = st.columns([3, 1])
+    with left:
+        st.caption(f"📚 **{len(kb.doc_names())}** document(s), **{len(kb.chunks)}** "
+                   f"passages indexed · retrieval: **{retrieval}**")
+        st.write("Indexed: " + ", ".join(f"`{d}`" for d in kb.doc_names()))
+    with right:
+        st.download_button(
+            "💾 Download KB", data=kb.to_bytes(),
+            file_name="procurement_kb.json", mime="application/json",
+            key="rag_download",
+            help="Save this knowledge base to a file so you can reload it in a "
+                 "later session (this host has no permanent storage).",
+        )
 
     question = st.text_input(
         "Ask a question about your procurement history", key="rag_q",
