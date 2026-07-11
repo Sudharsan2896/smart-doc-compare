@@ -610,20 +610,22 @@ def render_ai_quote_analysis():
     )
 
     from docdiff.ai_providers import (
-        OllamaProvider, LocalHeuristicProvider, ClaudeProvider, QUOTE_FIELDS,
-        _CLAUDE_DEFAULT_MODEL,
+        OllamaProvider, LocalHeuristicProvider, ClaudeProvider, GeminiProvider,
+        QUOTE_FIELDS, _CLAUDE_DEFAULT_MODEL, _GEMINI_DEFAULT_MODEL,
     )
     from docdiff.quote_intelligence import analyze_quotes, SCORE_WEIGHTS
 
-    # --- AI engine selection (Ollama / Claude cloud / local rules) ---
+    # --- AI engine selection (Ollama / Claude / Gemini cloud / local rules) ---
     engine = st.radio(
         "AI engine",
-        ["Auto (use Ollama if running)", "Claude (cloud LLM)", "Local rules (no LLM)"],
+        ["Auto (use Ollama if running)", "Claude (cloud LLM)",
+         "Gemini (cloud LLM)", "Local rules (no LLM)"],
         horizontal=True,
         help="Auto uses a local Ollama LLM when it's running on your computer. "
-             "Claude uses Anthropic's cloud API (needs an API key, sends the quote "
-             "text to Anthropic) for the sharpest results. Local rules use the "
-             "built-in engine, which works anywhere with no key.",
+             "Claude (Anthropic) and Gemini (Google) use a cloud API — each needs "
+             "its own API key and sends the quote text to that provider — and give "
+             "the sharpest results. Local rules use the built-in engine, which "
+             "works anywhere with no key.",
     )
     if engine.startswith("Auto"):
         model = st.text_input("Ollama model (if running)", value="llama3.1",
@@ -663,6 +665,34 @@ def render_ai_quote_analysis():
             provider = LocalHeuristicProvider()
             st.warning("No Anthropic API key found — falling back to the local "
                        "rules engine. Enter a key above to use Claude.")
+    elif engine.startswith("Gemini"):
+        # Key resolution order: Streamlit secret → env var → password box.
+        secret_key = None
+        try:
+            secret_key = st.secrets.get("GEMINI_API_KEY") or st.secrets.get("GOOGLE_API_KEY")
+        except Exception:
+            secret_key = None
+        api_key = (secret_key or os.environ.get("GEMINI_API_KEY")
+                   or os.environ.get("GOOGLE_API_KEY"))
+        if not api_key:
+            api_key = st.text_input(
+                "Google Gemini API key", type="password",
+                help="Get one at aistudio.google.com/apikey. Or set it once in "
+                     "Streamlit secrets / the GEMINI_API_KEY env var.",
+            ).strip() or None
+        gemini_model = st.text_input(
+            "Gemini model", value=_GEMINI_DEFAULT_MODEL,
+            help="Default is a capable general model. Use e.g. gemini-2.5-flash "
+                 "for lower cost.",
+        ).strip() or _GEMINI_DEFAULT_MODEL
+        gemini = GeminiProvider(model=gemini_model, api_key=api_key)
+        if gemini.available():
+            provider = gemini
+            st.success(f"🟢 Using Gemini — model **{gemini.model}**.")
+        else:
+            provider = LocalHeuristicProvider()
+            st.warning("No Google Gemini API key found — falling back to the local "
+                       "rules engine. Enter a key above to use Gemini.")
     else:
         provider = LocalHeuristicProvider()
 

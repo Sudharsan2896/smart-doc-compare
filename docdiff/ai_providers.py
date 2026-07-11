@@ -17,13 +17,18 @@ Providers shipped now:
                               Works everywhere, including the free cloud host, and
                               gives the sharpest extraction + reasoning. Sends quote
                               text to Anthropic, so only use it where that's allowed.
+    GeminiProvider          - talks to Google's Gemini cloud API (needs an API key).
+                              Same trade-off as Claude: works anywhere, sends quote
+                              text to Google.
 
 get_provider() auto-detects: Ollama if reachable, else the heuristic engine.
-Claude is opt-in (get_provider(prefer="claude")) because it needs a key and sends
-text off-machine — the caller decides when that trade-off is acceptable.
+The cloud providers are opt-in (get_provider(prefer="claude"|"gemini")) because
+they need a key and send text off-machine — the caller decides when that trade-off
+is acceptable.
 
-Adding another cloud brain (e.g. a GeminiProvider) is the same shape: subclass
-AIProvider, implement available()/extract(), optionally recommend()/reason().
+The two cloud providers are the same shape (subclass AIProvider, implement
+available()/extract(), optionally recommend()/reason()); a third — OpenAI,
+Mistral, etc. — would slot in the same way without touching the scoring engine.
 """
 
 from __future__ import annotations
@@ -308,9 +313,12 @@ class ClaudeProvider(AIProvider):
 
     def available(self) -> bool:
         """True when the SDK is installed and a key is resolvable — no network call."""
+        # Catch BaseException, not just Exception: a broken/partial install of an
+        # optional cloud SDK (e.g. a bad native binding) can raise non-Exception
+        # errors at import time, and selecting this engine must never crash the app.
         try:
             import anthropic  # noqa: F401
-        except Exception:
+        except BaseException:
             return False
         import os
         return bool(self.api_key or os.environ.get("ANTHROPIC_API_KEY"))
@@ -410,18 +418,140 @@ class ClaudeProvider(AIProvider):
             return ""
 
 
+# --- Gemini provider (Google cloud API) --------------------------------------
+# Default to a capable general model. The caller can pass "gemini-2.5-flash"
+# from the UI for lower cost, or a newer model string as they're released.
+_GEMINI_DEFAULT_MODEL = "gemini-2.5-pro"
+
+
+class GeminiProvider(AIProvider):
+    name = "Gemini (Google cloud LLM)"
+
+    def __init__(self, model: str = _GEMINI_DEFAULT_MODEL, api_key: str | None = None):
+        self.model = model or _GEMINI_DEFAULT_MODEL
+        self.api_key = api_key or None
+        self._client_cache = None
+
+    def available(self) -> bool:
+        """True when the SDK is installed and a key is resolvable — no network call."""
+        # Catch BaseException: google-genai's import pulls in native crypto bindings
+        # that can raise a non-Exception (e.g. pyo3 PanicException) on a broken or
+        # partial install. Selecting this engine must never crash the app.
+        try:
+            from google import genai  # noqa: F401
+        except BaseException:
+            return False
+        import os
+        return bool(self.api_key
+                    or os.environ.get("GEMINI_API_KEY")
+                    or os.environ.get("GOOGLE_API_KEY"))
+
+    def _client(self):
+        if self._client_cache is None:
+            from google import genai
+            # Passing api_key=None lets the SDK resolve GEMINI_API_KEY/GOOGLE_API_KEY.
+            self._client_cache = genai.Client(api_key=self.api_key) \
+                if self.api_key else genai.Client()
+        return self._client_cache
+
+    def _generate(self, prompt: str, system: str | None = None,
+                  json_out: bool = False, max_tokens: int = 2048) -> str:
+        from google.genai import types
+        kwargs: dict = {"max_output_tokens": max_tokens, "temperature": 0.1}
+        if system:
+            kwargs["system_instruction"] = system
+        if json_out:
+            kwargs["response_mime_type"] = "application/json"
+        resp = self._client().models.generate_content(
+            model=self.model,
+            contents=prompt,
+            config=types.GenerateContentConfig(**kwargs),
+        )
+        return (resp.text or "").strip()
+
+    def extract(self, text, items_df, vendor_hint=""):
+        try:
+            prompt = (
+                "You are a procurement analyst. Extract these fields from the vendor "
+                "quotation text and return ONLY JSON with these exact keys: "
+                + ", ".join(f'"{f}"' for f in QUOTE_FIELDS)
+                + '. For each key use an object {"value": <string or null>, '
+                '"confidence": <0..1>}. If a field is absent, value null and '
+                "confidence 0.\n\nVendor filename hint: " + (vendor_hint or "")
+                + "\n\nQUOTATION TEXT:\n" + (text or "")[:8000]
+            )
+            data = json.loads(self._generate(prompt, json_out=True, max_tokens=2048))
+            result = {}
+            for f in QUOTE_FIELDS:
+                cell = data.get(f) or {}
+                if isinstance(cell, dict):
+                    result[f] = {"value": cell.get("value"),
+                                 "confidence": float(cell.get("confidence") or 0.0)}
+                else:
+                    result[f] = {"value": cell, "confidence": 0.8 if cell else 0.0}
+            return result
+        except Exception:
+            # Any failure (no key, network, bad JSON) → heuristic so nothing breaks.
+            return heuristic_extract(text, items_df, vendor_hint)
+
+    def recommend(self, context: str) -> str:
+        try:
+            return self._generate(
+                context,
+                system="You are a procurement advisor. Write a concise, professional "
+                       "recommendation (5-8 sentences) for a procurement committee. "
+                       "Avoid jargon. Do not invent numbers — use only what's given.",
+                max_tokens=1024,
+            )
+        except Exception:
+            return ""
+
+    def reason(self, quotes: list[tuple]) -> str:
+        if not quotes:
+            return ""
+        blocks = []
+        for i, (name, text) in enumerate(quotes, 1):
+            blocks.append(f"--- QUOTE {i} (file: {name}) ---\n{(text or '')[:6000]}")
+        prompt = (
+            "You are an experienced procurement analyst. Compare the vendor "
+            "quotations below like a professional and produce a committee-ready "
+            "note in markdown.\n\n"
+            "Do this:\n"
+            "1. Identify each vendor and what they are quoting.\n"
+            "2. Put COMPARABLE line items side by side. Compute effective prices "
+            "INCLUDING any taxes stated (e.g. '2800+5%' = 2940).\n"
+            "3. For each comparable item, say which vendor is cheaper and by how "
+            "much (amount and %).\n"
+            "4. Note non-price differences: inclusions, quantity, warranty, "
+            "validity, payment terms, and any missing info or risks.\n"
+            "5. End with a clear recommendation of best overall value and why.\n"
+            "Be specific with numbers. Use short sections and bullet points.\n\n"
+            + "\n\n".join(blocks)
+        )
+        try:
+            return self._generate(prompt, max_tokens=8000)
+        except Exception:
+            return ""
+
+
 def get_provider(prefer: str = "auto", model: str | None = None,
                  api_key: str | None = None) -> AIProvider:
     """Return the best available provider.
 
     'auto'   → Ollama if reachable, else the heuristic engine.
     'claude' → the Anthropic cloud provider if a key is available, else heuristic.
+    'gemini' → the Google Gemini cloud provider if a key is available, else heuristic.
     'ollama' → Ollama if reachable, else heuristic.
     """
     if prefer == "claude":
         claude = ClaudeProvider(model=model or _CLAUDE_DEFAULT_MODEL, api_key=api_key)
         if claude.available():
             return claude
+        return LocalHeuristicProvider()
+    if prefer == "gemini":
+        gemini = GeminiProvider(model=model or _GEMINI_DEFAULT_MODEL, api_key=api_key)
+        if gemini.available():
+            return gemini
         return LocalHeuristicProvider()
     if prefer in ("auto", "ollama"):
         ollama = OllamaProvider()
