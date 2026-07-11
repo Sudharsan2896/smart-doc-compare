@@ -13,10 +13,17 @@ Providers shipped now:
                               if one is running (e.g. on the user's own PC). Gives
                               real LLM reasoning. Never used on the free cloud host
                               because Ollama can't run there.
+    ClaudeProvider          - talks to Anthropic's cloud API (needs an API key).
+                              Works everywhere, including the free cloud host, and
+                              gives the sharpest extraction + reasoning. Sends quote
+                              text to Anthropic, so only use it where that's allowed.
 
 get_provider() auto-detects: Ollama if reachable, else the heuristic engine.
+Claude is opt-in (get_provider(prefer="claude")) because it needs a key and sends
+text off-machine — the caller decides when that trade-off is acceptable.
 
-Future: OpenAIProvider / ClaudeProvider would subclass AIProvider the same way.
+Adding another cloud brain (e.g. a GeminiProvider) is the same shape: subclass
+AIProvider, implement available()/extract(), optionally recommend()/reason().
 """
 
 from __future__ import annotations
@@ -264,8 +271,158 @@ class OllamaProvider(AIProvider):
             return ""
 
 
-def get_provider(prefer: str = "auto") -> AIProvider:
-    """Return the best available provider. 'auto' uses Ollama if reachable."""
+# --- Claude provider (Anthropic cloud API) -----------------------------------
+# Default to the most capable model. The caller can pass a cheaper one
+# (e.g. "claude-haiku-4-5") from the UI if cost matters more than sharpness.
+_CLAUDE_DEFAULT_MODEL = "claude-opus-4-8"
+
+
+def _quote_output_schema() -> dict:
+    """A JSON schema locking the model to {field: {value, confidence}} for every
+    QUOTE_FIELD. Structured outputs guarantee we get valid, parseable JSON back."""
+    field_schema = {
+        "type": "object",
+        "properties": {
+            # value is a string when present, null when the field is absent.
+            "value": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+            "confidence": {"type": "number"},
+        },
+        "required": ["value", "confidence"],
+        "additionalProperties": False,
+    }
+    return {
+        "type": "object",
+        "properties": {f: field_schema for f in QUOTE_FIELDS},
+        "required": list(QUOTE_FIELDS),
+        "additionalProperties": False,
+    }
+
+
+class ClaudeProvider(AIProvider):
+    name = "Claude (Anthropic cloud LLM)"
+
+    def __init__(self, model: str = _CLAUDE_DEFAULT_MODEL, api_key: str | None = None):
+        self.model = model or _CLAUDE_DEFAULT_MODEL
+        self.api_key = api_key or None
+        self._client_cache = None
+
+    def available(self) -> bool:
+        """True when the SDK is installed and a key is resolvable — no network call."""
+        try:
+            import anthropic  # noqa: F401
+        except Exception:
+            return False
+        import os
+        return bool(self.api_key or os.environ.get("ANTHROPIC_API_KEY"))
+
+    def _client(self):
+        if self._client_cache is None:
+            import anthropic
+            # Passing api_key=None lets the SDK resolve from the environment.
+            self._client_cache = anthropic.Anthropic(api_key=self.api_key) \
+                if self.api_key else anthropic.Anthropic()
+        return self._client_cache
+
+    @staticmethod
+    def _text(message) -> str:
+        """Concatenate the text blocks of a response (ignoring thinking blocks)."""
+        return "".join(b.text for b in message.content if b.type == "text").strip()
+
+    def extract(self, text, items_df, vendor_hint=""):
+        try:
+            client = self._client()
+            prompt = (
+                "You are a procurement analyst. Extract the key commercial fields "
+                "from the vendor quotation below. For each field give a value "
+                "(a short string, or null if the quote doesn't state it) and a "
+                "confidence from 0 to 1 for how sure you are.\n\n"
+                f"Vendor filename hint: {vendor_hint}\n\n"
+                "QUOTATION TEXT:\n" + (text or "")[:8000]
+            )
+            # No thinking needed for extraction; structured outputs force valid JSON.
+            resp = client.messages.create(
+                model=self.model,
+                max_tokens=2048,
+                output_config={"format": {"type": "json_schema",
+                                          "schema": _quote_output_schema()}},
+                messages=[{"role": "user", "content": prompt}],
+            )
+            data = json.loads(self._text(resp))
+            result = {}
+            for f in QUOTE_FIELDS:
+                cell = data.get(f) or {}
+                result[f] = {
+                    "value": cell.get("value"),
+                    "confidence": float(cell.get("confidence") or 0.0),
+                }
+            return result
+        except Exception:
+            # Any failure (no key, network, schema) → heuristic so the app never breaks.
+            return heuristic_extract(text, items_df, vendor_hint)
+
+    def recommend(self, context: str) -> str:
+        try:
+            resp = self._client().messages.create(
+                model=self.model,
+                max_tokens=1024,
+                system="You are a procurement advisor. Write a concise, professional "
+                       "recommendation (5-8 sentences) for a procurement committee. "
+                       "Avoid jargon. Do not invent numbers — use only what's given.",
+                messages=[{"role": "user", "content": context}],
+            )
+            return self._text(resp)
+        except Exception:
+            return ""
+
+    def reason(self, quotes: list[tuple]) -> str:
+        if not quotes:
+            return ""
+        blocks = []
+        for i, (name, text) in enumerate(quotes, 1):
+            blocks.append(f"--- QUOTE {i} (file: {name}) ---\n{(text or '')[:6000]}")
+        prompt = (
+            "You are an experienced procurement analyst. Compare the vendor "
+            "quotations below like a professional and produce a committee-ready "
+            "note in markdown.\n\n"
+            "Do this:\n"
+            "1. Identify each vendor and what they are quoting.\n"
+            "2. Put COMPARABLE line items side by side. Compute effective prices "
+            "INCLUDING any taxes stated (e.g. '2800+5%' = 2940).\n"
+            "3. For each comparable item, say which vendor is cheaper and by how "
+            "much (amount and %).\n"
+            "4. Note non-price differences: inclusions, quantity, warranty, "
+            "validity, payment terms, and any missing info or risks.\n"
+            "5. End with a clear recommendation of best overall value and why.\n"
+            "Be specific with numbers. Use short sections and bullet points.\n\n"
+            + "\n\n".join(blocks)
+        )
+        try:
+            # This is genuine analysis, so let Claude think. Stream + get_final_message
+            # so a long thinking+answer turn can't hit the SDK's non-stream timeout.
+            with self._client().messages.stream(
+                model=self.model,
+                max_tokens=8000,
+                thinking={"type": "adaptive"},
+                messages=[{"role": "user", "content": prompt}],
+            ) as stream:
+                return self._text(stream.get_final_message())
+        except Exception:
+            return ""
+
+
+def get_provider(prefer: str = "auto", model: str | None = None,
+                 api_key: str | None = None) -> AIProvider:
+    """Return the best available provider.
+
+    'auto'   → Ollama if reachable, else the heuristic engine.
+    'claude' → the Anthropic cloud provider if a key is available, else heuristic.
+    'ollama' → Ollama if reachable, else heuristic.
+    """
+    if prefer == "claude":
+        claude = ClaudeProvider(model=model or _CLAUDE_DEFAULT_MODEL, api_key=api_key)
+        if claude.available():
+            return claude
+        return LocalHeuristicProvider()
     if prefer in ("auto", "ollama"):
         ollama = OllamaProvider()
         if ollama.available():

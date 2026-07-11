@@ -10,6 +10,8 @@ Deploy free:   push this folder to GitHub, then deploy on Streamlit Community Cl
 
 from __future__ import annotations
 
+import os
+
 import streamlit as st
 
 from docdiff.extract import extract
@@ -608,17 +610,20 @@ def render_ai_quote_analysis():
     )
 
     from docdiff.ai_providers import (
-        OllamaProvider, LocalHeuristicProvider, QUOTE_FIELDS,
+        OllamaProvider, LocalHeuristicProvider, ClaudeProvider, QUOTE_FIELDS,
+        _CLAUDE_DEFAULT_MODEL,
     )
     from docdiff.quote_intelligence import analyze_quotes, SCORE_WEIGHTS
 
-    # --- AI engine selection (auto-detect Ollama, else local rules) ---
+    # --- AI engine selection (Ollama / Claude cloud / local rules) ---
     engine = st.radio(
-        "AI engine", ["Auto (use Ollama if running)", "Local rules (no LLM)"],
+        "AI engine",
+        ["Auto (use Ollama if running)", "Claude (cloud LLM)", "Local rules (no LLM)"],
         horizontal=True,
-        help="Auto uses a local Ollama LLM when it's running on your computer "
-             "(richer reasoning); otherwise it uses the built-in rules engine, "
-             "which also works on the free cloud host.",
+        help="Auto uses a local Ollama LLM when it's running on your computer. "
+             "Claude uses Anthropic's cloud API (needs an API key, sends the quote "
+             "text to Anthropic) for the sharpest results. Local rules use the "
+             "built-in engine, which works anywhere with no key.",
     )
     if engine.startswith("Auto"):
         model = st.text_input("Ollama model (if running)", value="llama3.1",
@@ -631,6 +636,33 @@ def render_ai_quote_analysis():
         else:
             provider = LocalHeuristicProvider()
             st.info("Ollama not running — using the built-in local rules engine.")
+    elif engine.startswith("Claude"):
+        # Key resolution order: Streamlit secret → env var → password box.
+        secret_key = None
+        try:
+            secret_key = st.secrets.get("ANTHROPIC_API_KEY")
+        except Exception:
+            secret_key = None
+        api_key = secret_key or os.environ.get("ANTHROPIC_API_KEY")
+        if not api_key:
+            api_key = st.text_input(
+                "Anthropic API key", type="password",
+                help="Get one at console.anthropic.com. Or set it once in "
+                     "Streamlit secrets / the ANTHROPIC_API_KEY env var.",
+            ).strip() or None
+        claude_model = st.text_input(
+            "Claude model", value=_CLAUDE_DEFAULT_MODEL,
+            help="Default is the most capable model. Use e.g. claude-haiku-4-5 "
+                 "for lower cost, or claude-sonnet-5 for a middle ground.",
+        ).strip() or _CLAUDE_DEFAULT_MODEL
+        claude = ClaudeProvider(model=claude_model, api_key=api_key)
+        if claude.available():
+            provider = claude
+            st.success(f"🟢 Using Claude — model **{claude.model}**.")
+        else:
+            provider = LocalHeuristicProvider()
+            st.warning("No Anthropic API key found — falling back to the local "
+                       "rules engine. Enter a key above to use Claude.")
     else:
         provider = LocalHeuristicProvider()
 
