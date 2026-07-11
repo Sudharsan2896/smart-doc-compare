@@ -42,6 +42,32 @@ _ACTION = {
 # Order used when ranking so the most urgent bucket floats to the top.
 _STATUS_RANK = {STATUS_EXPIRED: 0, STATUS_CRITICAL: 1, STATUS_DUE: 2, STATUS_OK: 3}
 
+# Header keywords for auto-detecting columns, most specific first. Order matters:
+# for end_date, "expiry" is tried before the loose "end" so a real expiry column
+# wins over a coincidental match.
+COLUMN_KEYWORDS = {
+    "asset": ["asset", "equipment", "item", "description", "descr"],
+    "vendor": ["vendor", "supplier", "contractor", "party"],
+    "end_date": ["expiry", "expire", "expires", "renewal", "valid until",
+                 "valid", "end"],
+    "value": ["value", "amount", "cost", "price"],
+    "owner": ["owner", "department", "dept", "location", "custodian"],
+    "contact": ["email", "e-mail", "contact"],
+}
+
+
+def guess_column(headers, logical: str) -> str | None:
+    """Best-guess the header for a logical field. Matches keywords at a WORD
+    BOUNDARY, not as a bare substring — otherwise the keyword "end" would match
+    "Vendor" (v-end-or) and steal the expiry column. Returns None if nothing fits."""
+    import re
+    for kw in COLUMN_KEYWORDS.get(logical, []):
+        pat = re.compile(r"\b" + re.escape(kw))
+        for h in headers:
+            if pat.search(str(h).lower()):
+                return h
+    return None
+
 
 @dataclass
 class AmcRecord:

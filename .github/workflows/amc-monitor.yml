@@ -1,0 +1,67 @@
+name: AMC Renewal Monitor
+
+# Runs the AMC monitor every morning. It reads the register, decides which
+# contracts are expired / critical / due, and produces a digest with reminder
+# drafts — shown in the run Summary, saved as an artifact, and emailed to the
+# procurement inbox if SMTP secrets are set. It never emails vendors directly.
+
+on:
+  schedule:
+    # 03:30 UTC daily ≈ 09:00 IST. Adjust to taste (cron is in UTC).
+    - cron: "30 3 * * *"
+  workflow_dispatch: {}   # also allow running it on demand from the Actions tab
+
+permissions:
+  contents: read
+
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # Template drafts need no dependencies. Only install an LLM SDK if you've
+      # enabled AMC_USE_LLM and want Claude/Gemini to write the reminder drafts.
+      - name: Install LLM SDK (optional)
+        if: ${{ vars.AMC_USE_LLM == '1' }}
+        run: pip install anthropic google-genai
+
+      - name: Run AMC monitor
+        env:
+          # --- what to read and how to classify (repo Variables) ---
+          AMC_REGISTER_PATH: ${{ vars.AMC_REGISTER_PATH }}
+          AMC_CRITICAL_DAYS: ${{ vars.AMC_CRITICAL_DAYS }}
+          AMC_DUE_DAYS: ${{ vars.AMC_DUE_DAYS }}
+          AMC_USE_LLM: ${{ vars.AMC_USE_LLM }}
+          # --- optional column overrides (repo Variables) ---
+          AMC_COL_ASSET: ${{ vars.AMC_COL_ASSET }}
+          AMC_COL_VENDOR: ${{ vars.AMC_COL_VENDOR }}
+          AMC_COL_END: ${{ vars.AMC_COL_END }}
+          AMC_COL_VALUE: ${{ vars.AMC_COL_VALUE }}
+          AMC_COL_OWNER: ${{ vars.AMC_COL_OWNER }}
+          AMC_COL_CONTACT: ${{ vars.AMC_COL_CONTACT }}
+          # --- LLM key (Secret), only used when AMC_USE_LLM=1 ---
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          # --- email delivery (Secrets); set all four to enable ---
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          AMC_EMAIL_FROM: ${{ secrets.AMC_EMAIL_FROM }}
+          AMC_EMAIL_TO: ${{ secrets.AMC_EMAIL_TO }}
+        run: python run_amc.py
+
+      - name: Upload digest + report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: amc-report
+          path: |
+            amc_digest.md
+            amc_action_report.csv
+          if-no-files-found: ignore

@@ -1243,7 +1243,9 @@ def render_amc():
     )
 
     from docdiff.tables import file_to_dataframe
-    from docdiff.amc import analyze_amc, draft_reminder, records_to_csv
+    from docdiff.amc import (
+        analyze_amc, draft_reminder, records_to_csv, guess_column,
+    )
 
     provider = _select_ai_provider(key_prefix="amc_")
 
@@ -1265,41 +1267,34 @@ def render_amc():
 
     cols = list(df.columns)
 
-    def _guess(names, default_idx):
-        low = [str(c).lower() for c in cols]
-        for want in names:
-            for i, c in enumerate(low):
-                if want in c:
-                    return i
-        return min(default_idx, len(cols) - 1)
+    def _idx(logical, default_idx):
+        """Default index for a required column, using the shared word-boundary
+        guesser (so 'end' matches 'AMC End', not 'Vendor')."""
+        g = guess_column(cols, logical)
+        return cols.index(g) if g in cols else min(default_idx, len(cols) - 1)
+
+    def _opt_idx(logical):
+        """Default index into a [NONE] + cols list for an optional column."""
+        g = guess_column(cols, logical)
+        return cols.index(g) + 1 if g in cols else 0
 
     st.write("**Map your columns** (we've guessed — correct if needed):")
     c1, c2, c3 = st.columns(3)
     asset_col = c1.selectbox("Asset / equipment", cols,
-                             index=_guess(["asset", "equipment", "item", "descr"], 0),
-                             key="amc_asset")
+                             index=_idx("asset", 0), key="amc_asset")
     vendor_col = c2.selectbox("Vendor", cols,
-                              index=_guess(["vendor", "supplier", "party"], 1),
-                              key="amc_vendor")
+                              index=_idx("vendor", 1), key="amc_vendor")
     end_col = c3.selectbox("AMC expiry date", cols,
-                           index=_guess(["end", "expiry", "expire", "valid"], 2),
-                           key="amc_end")
+                           index=_idx("end_date", 2), key="amc_end")
 
     NONE = "(none)"
     with st.expander("Optional columns (value, owner, contact)"):
         value_col = st.selectbox("Contract value", [NONE] + cols,
-                                 index=(cols.index(next((c for c in cols if "value" in str(c).lower()
-                                        or "amount" in str(c).lower()), "")) + 1)
-                                 if any("value" in str(c).lower() or "amount" in str(c).lower()
-                                        for c in cols) else 0,
-                                 key="amc_value")
-        owner_col = st.selectbox("Owner / department", [NONE] + cols, key="amc_owner")
+                                 index=_opt_idx("value"), key="amc_value")
+        owner_col = st.selectbox("Owner / department", [NONE] + cols,
+                                 index=_opt_idx("owner"), key="amc_owner")
         contact_col = st.selectbox("Vendor contact / email", [NONE] + cols,
-                                   index=(cols.index(next((c for c in cols if "email" in str(c).lower()
-                                          or "contact" in str(c).lower()), "")) + 1)
-                                   if any("email" in str(c).lower() or "contact" in str(c).lower()
-                                          for c in cols) else 0,
-                                   key="amc_contact")
+                                   index=_opt_idx("contact"), key="amc_contact")
 
     c1, c2 = st.columns(2)
     critical_days = c1.slider("Flag **Critical** if expiring within (days)",
