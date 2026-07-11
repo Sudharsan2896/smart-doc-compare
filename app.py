@@ -10,6 +10,8 @@ Deploy free:   push this folder to GitHub, then deploy on Streamlit Community Cl
 
 from __future__ import annotations
 
+import os
+
 import streamlit as st
 
 from docdiff.extract import extract
@@ -202,7 +204,8 @@ def main():
         else:
             tool = st.radio(
                 "Choose a tool",
-                ["🤖 AI Quote Analysis", "🧮 Quote Comparison",
+                ["🧭 RFQ Agent", "🤖 AI Quote Analysis", "🔎 Knowledge Base (RAG)",
+                 "🔔 AMC Monitor", "🧮 Quote Comparison",
                  "✅ PO vs Invoice Validator"],
             )
         st.divider()
@@ -212,7 +215,10 @@ def main():
         "📄 PDF → Word": render_pdf_to_word,
         "📊 Word tables → Excel": render_word_to_excel,
         "🔀 Reconcile data": render_reconcile,
+        "🧭 RFQ Agent": render_rfq,
         "🤖 AI Quote Analysis": render_ai_quote_analysis,
+        "🔎 Knowledge Base (RAG)": render_rag,
+        "🔔 AMC Monitor": render_amc,
         "🧮 Quote Comparison": render_quote_comparison,
         "✅ PO vs Invoice Validator": render_po_validator,
     }
@@ -598,6 +604,93 @@ def render_reconcile():
     )
 
 
+def _select_ai_provider(key_prefix: str = ""):
+    """Render the shared AI-engine picker and return the chosen provider.
+
+    Used by both AI Quote Analysis and the Knowledge Base. `key_prefix` keeps the
+    Streamlit widget keys unique when the picker appears on more than one tool.
+    Always returns a working provider — falls back to the local rules engine
+    whenever a cloud/Ollama engine isn't reachable.
+    """
+    from docdiff.ai_providers import (
+        OllamaProvider, LocalHeuristicProvider, ClaudeProvider, GeminiProvider,
+        _CLAUDE_DEFAULT_MODEL, _GEMINI_DEFAULT_MODEL,
+    )
+    engine = st.radio(
+        "AI engine",
+        ["Auto (use Ollama if running)", "Claude (cloud LLM)",
+         "Gemini (cloud LLM)", "Local rules (no LLM)"],
+        horizontal=True, key=f"{key_prefix}engine",
+        help="Auto uses a local Ollama LLM when it's running on your computer. "
+             "Claude (Anthropic) and Gemini (Google) use a cloud API — each needs "
+             "its own API key and sends text to that provider — and give the "
+             "sharpest results. Local rules use the built-in engine, which works "
+             "anywhere with no key.",
+    )
+    if engine.startswith("Auto"):
+        model = st.text_input("Ollama model (if running)", value="llama3.1",
+                              key=f"{key_prefix}ollama_model",
+                              help="e.g. llama3.1, gemma3, qwen3 — must be pulled "
+                                   "in Ollama. Ignored if Ollama isn't running.")
+        ollama = OllamaProvider(model=model.strip() or "llama3.1")
+        if ollama.available():
+            st.success(f"🟢 Ollama detected — using model **{ollama.model}**.")
+            return ollama
+        st.info("Ollama not running — using the built-in local rules engine.")
+        return LocalHeuristicProvider()
+    if engine.startswith("Claude"):
+        # Key resolution order: Streamlit secret → env var → password box.
+        try:
+            secret_key = st.secrets.get("ANTHROPIC_API_KEY")
+        except Exception:
+            secret_key = None
+        api_key = secret_key or os.environ.get("ANTHROPIC_API_KEY")
+        if not api_key:
+            api_key = st.text_input(
+                "Anthropic API key", type="password", key=f"{key_prefix}claude_key",
+                help="Get one at console.anthropic.com. Or set it once in "
+                     "Streamlit secrets / the ANTHROPIC_API_KEY env var.",
+            ).strip() or None
+        claude_model = st.text_input(
+            "Claude model", value=_CLAUDE_DEFAULT_MODEL, key=f"{key_prefix}claude_model",
+            help="Default is the most capable model. Use e.g. claude-haiku-4-5 "
+                 "for lower cost, or claude-sonnet-5 for a middle ground.",
+        ).strip() or _CLAUDE_DEFAULT_MODEL
+        claude = ClaudeProvider(model=claude_model, api_key=api_key)
+        if claude.available():
+            st.success(f"🟢 Using Claude — model **{claude.model}**.")
+            return claude
+        st.warning("No Anthropic API key found — falling back to the local rules "
+                   "engine. Enter a key above to use Claude.")
+        return LocalHeuristicProvider()
+    if engine.startswith("Gemini"):
+        try:
+            secret_key = st.secrets.get("GEMINI_API_KEY") or st.secrets.get("GOOGLE_API_KEY")
+        except Exception:
+            secret_key = None
+        api_key = (secret_key or os.environ.get("GEMINI_API_KEY")
+                   or os.environ.get("GOOGLE_API_KEY"))
+        if not api_key:
+            api_key = st.text_input(
+                "Google Gemini API key", type="password", key=f"{key_prefix}gemini_key",
+                help="Get one at aistudio.google.com/apikey. Or set it once in "
+                     "Streamlit secrets / the GEMINI_API_KEY env var.",
+            ).strip() or None
+        gemini_model = st.text_input(
+            "Gemini model", value=_GEMINI_DEFAULT_MODEL, key=f"{key_prefix}gemini_model",
+            help="Default is a capable general model. Use e.g. gemini-2.5-flash "
+                 "for lower cost.",
+        ).strip() or _GEMINI_DEFAULT_MODEL
+        gemini = GeminiProvider(model=gemini_model, api_key=api_key)
+        if gemini.available():
+            st.success(f"🟢 Using Gemini — model **{gemini.model}**.")
+            return gemini
+        st.warning("No Google Gemini API key found — falling back to the local "
+                   "rules engine. Enter a key above to use Gemini.")
+        return LocalHeuristicProvider()
+    return LocalHeuristicProvider()
+
+
 def render_ai_quote_analysis():
     st.title("🤖 AI Quote Analysis")
     st.caption(
@@ -607,38 +700,18 @@ def render_ai_quote_analysis():
         "standardise the formats first."
     )
 
-    from docdiff.ai_providers import (
-        OllamaProvider, LocalHeuristicProvider, QUOTE_FIELDS,
-    )
+    from docdiff.ai_providers import QUOTE_FIELDS
     from docdiff.quote_intelligence import analyze_quotes, SCORE_WEIGHTS
 
-    # --- AI engine selection (auto-detect Ollama, else local rules) ---
-    engine = st.radio(
-        "AI engine", ["Auto (use Ollama if running)", "Local rules (no LLM)"],
-        horizontal=True,
-        help="Auto uses a local Ollama LLM when it's running on your computer "
-             "(richer reasoning); otherwise it uses the built-in rules engine, "
-             "which also works on the free cloud host.",
-    )
-    if engine.startswith("Auto"):
-        model = st.text_input("Ollama model (if running)", value="llama3.1",
-                              help="e.g. llama3.1, gemma3, qwen3 — must be pulled "
-                                   "in Ollama. Ignored if Ollama isn't running.")
-        ollama = OllamaProvider(model=model.strip() or "llama3.1")
-        if ollama.available():
-            provider = ollama
-            st.success(f"🟢 Ollama detected — using model **{ollama.model}**.")
-        else:
-            provider = LocalHeuristicProvider()
-            st.info("Ollama not running — using the built-in local rules engine.")
-    else:
-        provider = LocalHeuristicProvider()
+    provider = _select_ai_provider(key_prefix="quote_")
 
     files = st.file_uploader(
         "Upload vendor quotations",
         type=["pdf", "docx", "png", "jpg", "jpeg", "webp", "tiff", "tif", "bmp",
-              "xlsx", "csv"],
+              "xlsx", "csv", "txt", "md"],
         accept_multiple_files=True, key="ai_quote_files",
+        help="You can also try the ready-made samples in samples/quotes/ "
+             "(three solar-equipment quotes) to see the analysis end to end.",
     )
     if not files:
         st.info("⬆️ Upload at least two quotations to begin.")
@@ -1043,6 +1116,386 @@ def render_po_validator():
         data=build_validation_excel(result),
         file_name="po_invoice_validation.xlsx", mime=XLSX_MIME,
     )
+
+
+def render_rag():
+    st.title("🔎 Procurement Knowledge Base (RAG)")
+    st.caption(
+        "Build a searchable memory of past procurement documents — quotes, POs, "
+        "contracts, AMC records — then ask questions in plain English. Answers are "
+        "grounded in your documents and **cite the source** they came from. "
+        "Retrieval runs locally (no data leaves the machine to search); only the "
+        "final answer-writing step uses the chosen AI engine."
+    )
+
+    from docdiff.rag import KnowledgeBase, answer_question
+
+    if "kb" not in st.session_state:
+        st.session_state.kb = KnowledgeBase()
+    kb = st.session_state.kb
+
+    provider = _select_ai_provider(key_prefix="rag_")
+
+    with st.expander("📥 Add documents to the knowledge base",
+                     expanded=kb.is_empty()):
+        files = st.file_uploader(
+            "Upload procurement documents",
+            type=["pdf", "docx", "xlsx", "csv", "txt", "md",
+                  "png", "jpg", "jpeg", "tiff", "tif", "bmp"],
+            accept_multiple_files=True, key="rag_files",
+            help="Quotes, POs, contracts, AMC records… Try the files in "
+                 "samples/quotes/ to see it work end to end.",
+        )
+        c1, c2 = st.columns(2)
+        if c1.button("Add to knowledge base", type="primary", key="rag_add"):
+            if files:
+                added = 0
+                with st.spinner("Reading and indexing…"):
+                    for f in files:
+                        try:
+                            n, _ = kb.add_document(f.getvalue(), f.name)
+                            added += n
+                        except Exception as e:  # noqa: BLE001
+                            st.warning(f"Couldn't read {f.name}: {e}")
+                    kb.build()
+                st.success(f"Indexed {added} passage(s) from {len(files)} file(s).")
+            else:
+                st.info("Choose some files first.")
+        if c2.button("🗑️ Clear knowledge base", key="rag_clear"):
+            st.session_state.kb = KnowledgeBase()
+            st.rerun()
+
+        st.divider()
+        st.caption("Or load a knowledge base you saved earlier (this host wipes "
+                   "memory between sessions, so save/load is how you keep one).")
+        kb_file = st.file_uploader("Load a saved knowledge base (.json)",
+                                   type=["json"], key="rag_kb_upload")
+        if st.button("Load knowledge base", key="rag_kb_load"):
+            if kb_file is not None:
+                try:
+                    st.session_state.kb = KnowledgeBase.from_bytes(kb_file.getvalue())
+                    st.success("Knowledge base loaded.")
+                    st.rerun()
+                except Exception as e:  # noqa: BLE001
+                    st.error(f"Couldn't load that file: {e}")
+            else:
+                st.info("Choose a saved .json knowledge base first.")
+
+    if kb.is_empty():
+        st.info("The knowledge base is empty. Add a few documents above — the three "
+                "quotes in **samples/quotes/** are a good way to try it.")
+        return
+
+    retrieval = "meaning-based embeddings" if kb.used_model else "keyword (TF-IDF)"
+    left, right = st.columns([3, 1])
+    with left:
+        st.caption(f"📚 **{len(kb.doc_names())}** document(s), **{len(kb.chunks)}** "
+                   f"passages indexed · retrieval: **{retrieval}**")
+        st.write("Indexed: " + ", ".join(f"`{d}`" for d in kb.doc_names()))
+    with right:
+        st.download_button(
+            "💾 Download KB", data=kb.to_bytes(),
+            file_name="procurement_kb.json", mime="application/json",
+            key="rag_download",
+            help="Save this knowledge base to a file so you can reload it in a "
+                 "later session (this host has no permanent storage).",
+        )
+
+    question = st.text_input(
+        "Ask a question about your procurement history", key="rag_q",
+        placeholder="e.g. What warranty did GreenVolt offer? Who gave credit terms?",
+    )
+    k = st.slider("Passages to retrieve", 2, 10, 5, key="rag_k")
+
+    if st.button("Ask", type="primary", key="rag_ask") and question.strip():
+        with st.spinner("Searching the knowledge base…"):
+            res = answer_question(kb, question.strip(), provider, k=k)
+
+        st.markdown("### Answer")
+        st.markdown(res["answer"])
+        if res["used_llm"]:
+            st.caption(f"Retrieval: {res['retrieval']} · answer written by the AI "
+                       "engine, grounded in the cited sources below.")
+        else:
+            st.caption(f"Retrieval: {res['retrieval']} · no LLM engine active — "
+                       "showing the raw passages so you can read them yourself.")
+
+        st.markdown("### Sources")
+        for s in res["sources"]:
+            with st.expander(f"[{s['label']}]  {s['source']}  ·  "
+                             f"relevance {s['score']}"):
+                st.text(s["snippet"])
+
+
+_AMC_STATUS_EMOJI = {
+    "Expired": "🔴", "Critical": "🟠", "Due soon": "🟡", "OK": "⚪",
+}
+
+
+def render_amc():
+    st.title("🔔 AMC Renewal Monitor")
+    st.caption(
+        "Upload your AMC register (Excel/CSV). The monitor flags every contract "
+        "that's **expired, critical, or due for renewal** — ranked by urgency — and "
+        "drafts a renewal reminder email for each. It decides urgency purely from "
+        "the dates (deterministic, never the AI); the AI engine only *drafts the "
+        "emails* from those facts. In production a daily scheduled run would do this "
+        "and send the drafts automatically."
+    )
+
+    from docdiff.tables import file_to_dataframe
+    from docdiff.amc import (
+        analyze_amc, draft_reminder, records_to_csv, guess_column,
+    )
+
+    provider = _select_ai_provider(key_prefix="amc_")
+
+    file = st.file_uploader("Upload AMC register",
+                            type=["xlsx", "csv", "docx", "pdf"], key="amc_file")
+    if file is None:
+        st.info("⬆️ Upload your AMC register to begin. A ready-made sample is in "
+                "**samples/amc/amc_register.csv**.")
+        return
+
+    try:
+        df = file_to_dataframe(file.getvalue(), file.name)
+    except Exception as e:  # noqa: BLE001
+        st.error(f"Couldn't read that file: {e}")
+        return
+    if df is None or df.empty:
+        st.warning("No table could be read from that file.")
+        return
+
+    cols = list(df.columns)
+
+    def _idx(logical, default_idx):
+        """Default index for a required column, using the shared word-boundary
+        guesser (so 'end' matches 'AMC End', not 'Vendor')."""
+        g = guess_column(cols, logical)
+        return cols.index(g) if g in cols else min(default_idx, len(cols) - 1)
+
+    def _opt_idx(logical):
+        """Default index into a [NONE] + cols list for an optional column."""
+        g = guess_column(cols, logical)
+        return cols.index(g) + 1 if g in cols else 0
+
+    st.write("**Map your columns** (we've guessed — correct if needed):")
+    c1, c2, c3 = st.columns(3)
+    asset_col = c1.selectbox("Asset / equipment", cols,
+                             index=_idx("asset", 0), key="amc_asset")
+    vendor_col = c2.selectbox("Vendor", cols,
+                              index=_idx("vendor", 1), key="amc_vendor")
+    end_col = c3.selectbox("AMC expiry date", cols,
+                           index=_idx("end_date", 2), key="amc_end")
+
+    NONE = "(none)"
+    with st.expander("Optional columns (value, owner, contact)"):
+        value_col = st.selectbox("Contract value", [NONE] + cols,
+                                 index=_opt_idx("value"), key="amc_value")
+        owner_col = st.selectbox("Owner / department", [NONE] + cols,
+                                 index=_opt_idx("owner"), key="amc_owner")
+        contact_col = st.selectbox("Vendor contact / email", [NONE] + cols,
+                                   index=_opt_idx("contact"), key="amc_contact")
+
+    c1, c2 = st.columns(2)
+    critical_days = c1.slider("Flag **Critical** if expiring within (days)",
+                              1, 60, 15, key="amc_crit")
+    due_days = c2.slider("Flag **Due soon** if within (days)",
+                         critical_days + 1, 180, 45, key="amc_due")
+
+    col_map = {"asset": asset_col, "vendor": vendor_col, "end_date": end_col}
+    if value_col != NONE:
+        col_map["value"] = value_col
+    if owner_col != NONE:
+        col_map["owner"] = owner_col
+    if contact_col != NONE:
+        col_map["contact"] = contact_col
+
+    res = analyze_amc(df.to_dict("records"), col_map,
+                      critical_days=critical_days, due_days=due_days)
+    s = res["summary"]
+
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("🔴 Expired", s["Expired"])
+    m2.metric("🟠 Critical", s["Critical"])
+    m3.metric("🟡 Due soon", s["Due soon"])
+    m4.metric("💰 Value at risk", f"{s['at_risk_value']:,.0f}")
+    st.caption(f"As of **{res['today'].isoformat()}** · {s['total']} contracts · "
+               f"**{len(res['needs_action'])}** need action.")
+
+    display = [{
+        "": _AMC_STATUS_EMOJI.get(r.status, ""),
+        "Status": r.status,
+        "Days left": "—" if r.days_left is None else r.days_left,
+        "Asset": r.asset,
+        "Vendor": r.vendor,
+        "Expiry": r.end_date.isoformat() if r.end_date else "—",
+        "Action": r.action,
+    } for r in res["records"]]
+    st.dataframe(display, use_container_width=True, hide_index=True)
+
+    st.download_button("⬇️ Download action report (CSV)",
+                       data=records_to_csv(res),
+                       file_name="amc_action_report.csv", mime="text/csv",
+                       key="amc_report")
+
+    st.subheader("Draft renewal reminders")
+    if not res["needs_action"]:
+        st.success("Nothing needs action right now 🎉")
+        return
+    st.caption("For each contract needing action, draft a ready-to-send reminder. "
+               "The AI engine writes it from the contract facts (with no key, a "
+               "template is used) — review before sending.")
+    for i, r in enumerate(res["needs_action"]):
+        tail = "" if r.days_left is None else f" · {r.days_left}d"
+        label = f"{_AMC_STATUS_EMOJI.get(r.status, '')} {r.asset} ({r.vendor}){tail}"
+        with st.expander(label):
+            if st.button("✍️ Draft reminder", key=f"amc_draft_{i}"):
+                with st.spinner("Drafting…"):
+                    st.session_state[f"amc_email_{i}"] = draft_reminder(r, provider)
+            email = st.session_state.get(f"amc_email_{i}")
+            if email:
+                st.code(email)
+
+
+_QUOTE_UPLOAD_TYPES = ["pdf", "docx", "png", "jpg", "jpeg", "webp", "tiff", "tif",
+                       "bmp", "xlsx", "csv", "txt", "md"]
+
+
+def render_rfq():
+    st.title("🧭 RFQ Agent")
+    st.caption(
+        "Run a quotation end to end: capture the requirement, draft the RFQ to "
+        "vendors, compare their replies on the weighted procurement score, and "
+        "produce an award recommendation memo. The **score decides** the "
+        "recommended vendor — the AI only drafts the wording. Two human gates: "
+        "send the RFQ, and approve the award."
+    )
+
+    from docdiff.rfq import Requirement, draft_rfq, build_award_memo
+    from docdiff.quote_intelligence import analyze_quotes
+
+    ss = st.session_state
+    provider = _select_ai_provider(key_prefix="rfq_")
+
+    # --- Stage 1 · Requirement ------------------------------------------------
+    st.subheader("1 · Define the requirement")
+    prev = ss.get("rfq_req")
+    with st.form("rfq_req_form"):
+        title = st.text_input("Title", value=prev.title if prev else "")
+        items = st.text_area("Items / specifications",
+                             value=prev.items if prev else "",
+                             placeholder="330Wp solar panels; 5kVA grid-tie "
+                                         "inverter; mounting + cabling")
+        c1, c2 = st.columns(2)
+        quantity = c1.text_input("Quantity", value=prev.quantity if prev else "")
+        needed_by = c2.text_input("Required by (date)",
+                                  value=prev.needed_by if prev else "")
+        c3, c4 = st.columns(2)
+        budget = c3.text_input("Indicative budget (optional)",
+                               value=prev.budget if prev else "")
+        buyer = c4.text_input("From (buyer / team)",
+                              value=prev.buyer if prev else
+                              "Procurement Team, SELCO Foundation")
+        notes = st.text_area("Notes (optional)", value=prev.notes if prev else "")
+        submitted = st.form_submit_button("Save requirement", type="primary")
+    if submitted:
+        if not title.strip() or not items.strip():
+            st.warning("Give at least a title and the items / specifications.")
+        else:
+            ss.rfq_req = Requirement(
+                title=title.strip(), items=items.strip(), quantity=quantity.strip(),
+                needed_by=needed_by.strip(), budget=budget.strip(),
+                notes=notes.strip(),
+                buyer=buyer.strip() or "Procurement Team, SELCO Foundation")
+            # A new requirement invalidates downstream work.
+            for k in ("rfq_drafts", "rfq_analysis", "rfq_memo"):
+                ss.pop(k, None)
+
+    if "rfq_req" not in ss:
+        st.info("Fill in the requirement above to begin.")
+        return
+    req = ss.rfq_req
+    st.success(f"Requirement set: **{req.title}**")
+
+    # --- Stage 2 · Draft RFQ --------------------------------------------------
+    st.subheader("2 · Draft the RFQ to vendors")
+    vendors_text = st.text_area("Vendors to invite (one per line)", key="rfq_vendors",
+                                placeholder="GreenVolt Energy Solutions\n"
+                                            "SunPower Solar Systems\n"
+                                            "Bright Renewables Enterprises")
+    if st.button("✍️ Draft RFQ emails", key="rfq_draft_btn"):
+        vendors = [v.strip() for v in vendors_text.splitlines() if v.strip()]
+        if not vendors:
+            st.warning("Add at least one vendor.")
+        else:
+            with st.spinner("Drafting RFQs…"):
+                ss.rfq_drafts = {v: draft_rfq(req, v, provider) for v in vendors}
+    for v, draft in ss.get("rfq_drafts", {}).items():
+        with st.expander(f"RFQ → {v}"):
+            st.code(draft)
+    if ss.get("rfq_drafts"):
+        st.info("🚦 **Gate 1** — review and send these to your vendors, then collect "
+                "their quotations and upload them below.")
+
+    # --- Stage 3 · Compare replies (reuses the scoring engine) ----------------
+    st.subheader("3 · Compare vendor replies")
+    files = st.file_uploader("Upload the vendor quotations (2+)",
+                             type=_QUOTE_UPLOAD_TYPES, accept_multiple_files=True,
+                             key="rfq_files")
+    if st.button("📊 Analyze replies", key="rfq_analyze_btn"):
+        if not files or len(files) < 2:
+            st.warning("Upload at least two quotations to compare.")
+        else:
+            with st.spinner("Reading and scoring the replies…"):
+                ss.rfq_analysis = analyze_quotes(
+                    [(f.name, f.getvalue()) for f in files], provider)
+            ss.pop("rfq_memo", None)
+
+    analysis = ss.get("rfq_analysis")
+    if analysis and analysis.get("ranking"):
+        rank = analysis["ranking"]
+        st.dataframe(
+            [{"Rank": i, "Vendor": r["name"], "Score /100": round(r["total_score"], 1)}
+             for i, r in enumerate(rank, 1)],
+            hide_index=True, use_container_width=True)
+        st.caption(f"Engine: **{analysis['provider_name']}** · highest weighted "
+                   f"score: **{rank[0]['name']}**")
+
+    # --- Stage 4 · Award memo -------------------------------------------------
+    if analysis and analysis.get("ranking"):
+        st.subheader("4 · Award recommendation memo")
+        kb = ss.get("kb")
+        has_kb = kb is not None and not kb.is_empty()
+        use_hist = False
+        if has_kb:
+            use_hist = st.checkbox(
+                "Include historical context from the Knowledge Base (RAG)",
+                value=True, key="rfq_hist",
+                help="Pulls relevant passages about these vendors/items from your "
+                     "knowledge base and gives them to the memo as context.")
+        if st.button("🧾 Generate award memo", key="rfq_memo_btn"):
+            history = ""
+            if use_hist and has_kb:
+                query = (f"{req.title} {req.items} "
+                         + " ".join(r["name"] for r in analysis["ranking"]))
+                hits = kb.query(query, k=4)
+                history = "\n".join(f"- ({h.chunk.source}) {h.chunk.text[:300]}"
+                                    for h in hits)
+            with st.spinner("Writing the award memo…"):
+                ss.rfq_memo = build_award_memo(req, analysis, provider,
+                                               history=history)
+
+        memo = ss.get("rfq_memo")
+        if memo:
+            st.markdown(memo["memo"])
+            st.download_button("⬇️ Download memo (Markdown)",
+                               data=memo["memo"].encode("utf-8"),
+                               file_name="award_recommendation.md",
+                               mime="text/markdown", key="rfq_memo_dl")
+            st.info(f"🚦 **Gate 2** — the recommended awardee **{memo['awardee']}** is "
+                    "the top of the weighted score, not an AI choice. Committee "
+                    "approval is required before award.")
 
 
 if __name__ == "__main__":

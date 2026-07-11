@@ -7,6 +7,11 @@ important changes at the top.
 This first version is **free and fully local** — no AI API key, and no document
 text ever leaves the app.
 
+> 📖 This tool has grown into a full **AI-powered procurement toolkit** —
+> quote analysis, a searchable knowledge base (RAG), an autonomous AMC renewal
+> monitor, and an end-to-end RFQ agent. See the
+> **[Procurement Toolkit walkthrough](docs/WALKTHROUGH.md)** for the whole story.
+
 ---
 
 ## What it does (in plain English)
