@@ -205,7 +205,8 @@ def main():
             tool = st.radio(
                 "Choose a tool",
                 ["🤖 AI Quote Analysis", "🔎 Knowledge Base (RAG)",
-                 "🧮 Quote Comparison", "✅ PO vs Invoice Validator"],
+                 "🔔 AMC Monitor", "🧮 Quote Comparison",
+                 "✅ PO vs Invoice Validator"],
             )
         st.divider()
 
@@ -216,6 +217,7 @@ def main():
         "🔀 Reconcile data": render_reconcile,
         "🤖 AI Quote Analysis": render_ai_quote_analysis,
         "🔎 Knowledge Base (RAG)": render_rag,
+        "🔔 AMC Monitor": render_amc,
         "🧮 Quote Comparison": render_quote_comparison,
         "✅ PO vs Invoice Validator": render_po_validator,
     }
@@ -1222,6 +1224,142 @@ def render_rag():
             with st.expander(f"[{s['label']}]  {s['source']}  ·  "
                              f"relevance {s['score']}"):
                 st.text(s["snippet"])
+
+
+_AMC_STATUS_EMOJI = {
+    "Expired": "🔴", "Critical": "🟠", "Due soon": "🟡", "OK": "⚪",
+}
+
+
+def render_amc():
+    st.title("🔔 AMC Renewal Monitor")
+    st.caption(
+        "Upload your AMC register (Excel/CSV). The monitor flags every contract "
+        "that's **expired, critical, or due for renewal** — ranked by urgency — and "
+        "drafts a renewal reminder email for each. It decides urgency purely from "
+        "the dates (deterministic, never the AI); the AI engine only *drafts the "
+        "emails* from those facts. In production a daily scheduled run would do this "
+        "and send the drafts automatically."
+    )
+
+    from docdiff.tables import file_to_dataframe
+    from docdiff.amc import analyze_amc, draft_reminder, records_to_csv
+
+    provider = _select_ai_provider(key_prefix="amc_")
+
+    file = st.file_uploader("Upload AMC register",
+                            type=["xlsx", "csv", "docx", "pdf"], key="amc_file")
+    if file is None:
+        st.info("⬆️ Upload your AMC register to begin. A ready-made sample is in "
+                "**samples/amc/amc_register.csv**.")
+        return
+
+    try:
+        df = file_to_dataframe(file.getvalue(), file.name)
+    except Exception as e:  # noqa: BLE001
+        st.error(f"Couldn't read that file: {e}")
+        return
+    if df is None or df.empty:
+        st.warning("No table could be read from that file.")
+        return
+
+    cols = list(df.columns)
+
+    def _guess(names, default_idx):
+        low = [str(c).lower() for c in cols]
+        for want in names:
+            for i, c in enumerate(low):
+                if want in c:
+                    return i
+        return min(default_idx, len(cols) - 1)
+
+    st.write("**Map your columns** (we've guessed — correct if needed):")
+    c1, c2, c3 = st.columns(3)
+    asset_col = c1.selectbox("Asset / equipment", cols,
+                             index=_guess(["asset", "equipment", "item", "descr"], 0),
+                             key="amc_asset")
+    vendor_col = c2.selectbox("Vendor", cols,
+                              index=_guess(["vendor", "supplier", "party"], 1),
+                              key="amc_vendor")
+    end_col = c3.selectbox("AMC expiry date", cols,
+                           index=_guess(["end", "expiry", "expire", "valid"], 2),
+                           key="amc_end")
+
+    NONE = "(none)"
+    with st.expander("Optional columns (value, owner, contact)"):
+        value_col = st.selectbox("Contract value", [NONE] + cols,
+                                 index=(cols.index(next((c for c in cols if "value" in str(c).lower()
+                                        or "amount" in str(c).lower()), "")) + 1)
+                                 if any("value" in str(c).lower() or "amount" in str(c).lower()
+                                        for c in cols) else 0,
+                                 key="amc_value")
+        owner_col = st.selectbox("Owner / department", [NONE] + cols, key="amc_owner")
+        contact_col = st.selectbox("Vendor contact / email", [NONE] + cols,
+                                   index=(cols.index(next((c for c in cols if "email" in str(c).lower()
+                                          or "contact" in str(c).lower()), "")) + 1)
+                                   if any("email" in str(c).lower() or "contact" in str(c).lower()
+                                          for c in cols) else 0,
+                                   key="amc_contact")
+
+    c1, c2 = st.columns(2)
+    critical_days = c1.slider("Flag **Critical** if expiring within (days)",
+                              1, 60, 15, key="amc_crit")
+    due_days = c2.slider("Flag **Due soon** if within (days)",
+                         critical_days + 1, 180, 45, key="amc_due")
+
+    col_map = {"asset": asset_col, "vendor": vendor_col, "end_date": end_col}
+    if value_col != NONE:
+        col_map["value"] = value_col
+    if owner_col != NONE:
+        col_map["owner"] = owner_col
+    if contact_col != NONE:
+        col_map["contact"] = contact_col
+
+    res = analyze_amc(df.to_dict("records"), col_map,
+                      critical_days=critical_days, due_days=due_days)
+    s = res["summary"]
+
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("🔴 Expired", s["Expired"])
+    m2.metric("🟠 Critical", s["Critical"])
+    m3.metric("🟡 Due soon", s["Due soon"])
+    m4.metric("💰 Value at risk", f"{s['at_risk_value']:,.0f}")
+    st.caption(f"As of **{res['today'].isoformat()}** · {s['total']} contracts · "
+               f"**{len(res['needs_action'])}** need action.")
+
+    display = [{
+        "": _AMC_STATUS_EMOJI.get(r.status, ""),
+        "Status": r.status,
+        "Days left": "—" if r.days_left is None else r.days_left,
+        "Asset": r.asset,
+        "Vendor": r.vendor,
+        "Expiry": r.end_date.isoformat() if r.end_date else "—",
+        "Action": r.action,
+    } for r in res["records"]]
+    st.dataframe(display, use_container_width=True, hide_index=True)
+
+    st.download_button("⬇️ Download action report (CSV)",
+                       data=records_to_csv(res),
+                       file_name="amc_action_report.csv", mime="text/csv",
+                       key="amc_report")
+
+    st.subheader("Draft renewal reminders")
+    if not res["needs_action"]:
+        st.success("Nothing needs action right now 🎉")
+        return
+    st.caption("For each contract needing action, draft a ready-to-send reminder. "
+               "The AI engine writes it from the contract facts (with no key, a "
+               "template is used) — review before sending.")
+    for i, r in enumerate(res["needs_action"]):
+        tail = "" if r.days_left is None else f" · {r.days_left}d"
+        label = f"{_AMC_STATUS_EMOJI.get(r.status, '')} {r.asset} ({r.vendor}){tail}"
+        with st.expander(label):
+            if st.button("✍️ Draft reminder", key=f"amc_draft_{i}"):
+                with st.spinner("Drafting…"):
+                    st.session_state[f"amc_email_{i}"] = draft_reminder(r, provider)
+            email = st.session_state.get(f"amc_email_{i}")
+            if email:
+                st.code(email)
 
 
 if __name__ == "__main__":

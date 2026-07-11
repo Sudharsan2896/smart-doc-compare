@@ -82,6 +82,13 @@ class AIProvider(ABC):
         """
         return ""
 
+    def write(self, instruction: str) -> str:
+        """General single-shot generation from a self-contained instruction (e.g.
+        drafting a reminder email). Returns "" if this provider has no LLM — the
+        caller then uses its own deterministic template.
+        """
+        return ""
+
 
 # Grounding rules shared by every LLM provider's ask() — kept in one place so the
 # "answer only from the sources, cite them, never guess" guarantee is identical no
@@ -308,6 +315,12 @@ class OllamaProvider(AIProvider):
         except Exception:
             return ""
 
+    def write(self, instruction: str) -> str:
+        try:
+            return self._chat(instruction).strip()
+        except Exception:
+            return ""
+
 
 # --- Claude provider (Anthropic cloud API) -----------------------------------
 # Default to the most capable model. The caller can pass a cheaper one
@@ -423,6 +436,17 @@ class ClaudeProvider(AIProvider):
                 system=RAG_SYSTEM,
                 messages=[{"role": "user",
                            "content": _rag_user_prompt(question, context)}],
+            )
+            return self._text(resp)
+        except Exception:
+            return ""
+
+    def write(self, instruction: str) -> str:
+        try:
+            resp = self._client().messages.create(
+                model=self.model,
+                max_tokens=1024,
+                messages=[{"role": "user", "content": instruction}],
             )
             return self._text(resp)
         except Exception:
@@ -559,6 +583,12 @@ class GeminiProvider(AIProvider):
                 system=RAG_SYSTEM,
                 max_tokens=1024,
             )
+        except Exception:
+            return ""
+
+    def write(self, instruction: str) -> str:
+        try:
+            return self._generate(instruction, max_tokens=1024)
         except Exception:
             return ""
 
