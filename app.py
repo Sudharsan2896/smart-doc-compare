@@ -204,8 +204,8 @@ def main():
         else:
             tool = st.radio(
                 "Choose a tool",
-                ["🤖 AI Quote Analysis", "🧮 Quote Comparison",
-                 "✅ PO vs Invoice Validator"],
+                ["🤖 AI Quote Analysis", "🔎 Knowledge Base (RAG)",
+                 "🧮 Quote Comparison", "✅ PO vs Invoice Validator"],
             )
         st.divider()
 
@@ -215,6 +215,7 @@ def main():
         "📊 Word tables → Excel": render_word_to_excel,
         "🔀 Reconcile data": render_reconcile,
         "🤖 AI Quote Analysis": render_ai_quote_analysis,
+        "🔎 Knowledge Base (RAG)": render_rag,
         "🧮 Quote Comparison": render_quote_comparison,
         "✅ PO vs Invoice Validator": render_po_validator,
     }
@@ -600,6 +601,93 @@ def render_reconcile():
     )
 
 
+def _select_ai_provider(key_prefix: str = ""):
+    """Render the shared AI-engine picker and return the chosen provider.
+
+    Used by both AI Quote Analysis and the Knowledge Base. `key_prefix` keeps the
+    Streamlit widget keys unique when the picker appears on more than one tool.
+    Always returns a working provider — falls back to the local rules engine
+    whenever a cloud/Ollama engine isn't reachable.
+    """
+    from docdiff.ai_providers import (
+        OllamaProvider, LocalHeuristicProvider, ClaudeProvider, GeminiProvider,
+        _CLAUDE_DEFAULT_MODEL, _GEMINI_DEFAULT_MODEL,
+    )
+    engine = st.radio(
+        "AI engine",
+        ["Auto (use Ollama if running)", "Claude (cloud LLM)",
+         "Gemini (cloud LLM)", "Local rules (no LLM)"],
+        horizontal=True, key=f"{key_prefix}engine",
+        help="Auto uses a local Ollama LLM when it's running on your computer. "
+             "Claude (Anthropic) and Gemini (Google) use a cloud API — each needs "
+             "its own API key and sends text to that provider — and give the "
+             "sharpest results. Local rules use the built-in engine, which works "
+             "anywhere with no key.",
+    )
+    if engine.startswith("Auto"):
+        model = st.text_input("Ollama model (if running)", value="llama3.1",
+                              key=f"{key_prefix}ollama_model",
+                              help="e.g. llama3.1, gemma3, qwen3 — must be pulled "
+                                   "in Ollama. Ignored if Ollama isn't running.")
+        ollama = OllamaProvider(model=model.strip() or "llama3.1")
+        if ollama.available():
+            st.success(f"🟢 Ollama detected — using model **{ollama.model}**.")
+            return ollama
+        st.info("Ollama not running — using the built-in local rules engine.")
+        return LocalHeuristicProvider()
+    if engine.startswith("Claude"):
+        # Key resolution order: Streamlit secret → env var → password box.
+        try:
+            secret_key = st.secrets.get("ANTHROPIC_API_KEY")
+        except Exception:
+            secret_key = None
+        api_key = secret_key or os.environ.get("ANTHROPIC_API_KEY")
+        if not api_key:
+            api_key = st.text_input(
+                "Anthropic API key", type="password", key=f"{key_prefix}claude_key",
+                help="Get one at console.anthropic.com. Or set it once in "
+                     "Streamlit secrets / the ANTHROPIC_API_KEY env var.",
+            ).strip() or None
+        claude_model = st.text_input(
+            "Claude model", value=_CLAUDE_DEFAULT_MODEL, key=f"{key_prefix}claude_model",
+            help="Default is the most capable model. Use e.g. claude-haiku-4-5 "
+                 "for lower cost, or claude-sonnet-5 for a middle ground.",
+        ).strip() or _CLAUDE_DEFAULT_MODEL
+        claude = ClaudeProvider(model=claude_model, api_key=api_key)
+        if claude.available():
+            st.success(f"🟢 Using Claude — model **{claude.model}**.")
+            return claude
+        st.warning("No Anthropic API key found — falling back to the local rules "
+                   "engine. Enter a key above to use Claude.")
+        return LocalHeuristicProvider()
+    if engine.startswith("Gemini"):
+        try:
+            secret_key = st.secrets.get("GEMINI_API_KEY") or st.secrets.get("GOOGLE_API_KEY")
+        except Exception:
+            secret_key = None
+        api_key = (secret_key or os.environ.get("GEMINI_API_KEY")
+                   or os.environ.get("GOOGLE_API_KEY"))
+        if not api_key:
+            api_key = st.text_input(
+                "Google Gemini API key", type="password", key=f"{key_prefix}gemini_key",
+                help="Get one at aistudio.google.com/apikey. Or set it once in "
+                     "Streamlit secrets / the GEMINI_API_KEY env var.",
+            ).strip() or None
+        gemini_model = st.text_input(
+            "Gemini model", value=_GEMINI_DEFAULT_MODEL, key=f"{key_prefix}gemini_model",
+            help="Default is a capable general model. Use e.g. gemini-2.5-flash "
+                 "for lower cost.",
+        ).strip() or _GEMINI_DEFAULT_MODEL
+        gemini = GeminiProvider(model=gemini_model, api_key=api_key)
+        if gemini.available():
+            st.success(f"🟢 Using Gemini — model **{gemini.model}**.")
+            return gemini
+        st.warning("No Google Gemini API key found — falling back to the local "
+                   "rules engine. Enter a key above to use Gemini.")
+        return LocalHeuristicProvider()
+    return LocalHeuristicProvider()
+
+
 def render_ai_quote_analysis():
     st.title("🤖 AI Quote Analysis")
     st.caption(
@@ -609,92 +697,10 @@ def render_ai_quote_analysis():
         "standardise the formats first."
     )
 
-    from docdiff.ai_providers import (
-        OllamaProvider, LocalHeuristicProvider, ClaudeProvider, GeminiProvider,
-        QUOTE_FIELDS, _CLAUDE_DEFAULT_MODEL, _GEMINI_DEFAULT_MODEL,
-    )
+    from docdiff.ai_providers import QUOTE_FIELDS
     from docdiff.quote_intelligence import analyze_quotes, SCORE_WEIGHTS
 
-    # --- AI engine selection (Ollama / Claude / Gemini cloud / local rules) ---
-    engine = st.radio(
-        "AI engine",
-        ["Auto (use Ollama if running)", "Claude (cloud LLM)",
-         "Gemini (cloud LLM)", "Local rules (no LLM)"],
-        horizontal=True,
-        help="Auto uses a local Ollama LLM when it's running on your computer. "
-             "Claude (Anthropic) and Gemini (Google) use a cloud API — each needs "
-             "its own API key and sends the quote text to that provider — and give "
-             "the sharpest results. Local rules use the built-in engine, which "
-             "works anywhere with no key.",
-    )
-    if engine.startswith("Auto"):
-        model = st.text_input("Ollama model (if running)", value="llama3.1",
-                              help="e.g. llama3.1, gemma3, qwen3 — must be pulled "
-                                   "in Ollama. Ignored if Ollama isn't running.")
-        ollama = OllamaProvider(model=model.strip() or "llama3.1")
-        if ollama.available():
-            provider = ollama
-            st.success(f"🟢 Ollama detected — using model **{ollama.model}**.")
-        else:
-            provider = LocalHeuristicProvider()
-            st.info("Ollama not running — using the built-in local rules engine.")
-    elif engine.startswith("Claude"):
-        # Key resolution order: Streamlit secret → env var → password box.
-        secret_key = None
-        try:
-            secret_key = st.secrets.get("ANTHROPIC_API_KEY")
-        except Exception:
-            secret_key = None
-        api_key = secret_key or os.environ.get("ANTHROPIC_API_KEY")
-        if not api_key:
-            api_key = st.text_input(
-                "Anthropic API key", type="password",
-                help="Get one at console.anthropic.com. Or set it once in "
-                     "Streamlit secrets / the ANTHROPIC_API_KEY env var.",
-            ).strip() or None
-        claude_model = st.text_input(
-            "Claude model", value=_CLAUDE_DEFAULT_MODEL,
-            help="Default is the most capable model. Use e.g. claude-haiku-4-5 "
-                 "for lower cost, or claude-sonnet-5 for a middle ground.",
-        ).strip() or _CLAUDE_DEFAULT_MODEL
-        claude = ClaudeProvider(model=claude_model, api_key=api_key)
-        if claude.available():
-            provider = claude
-            st.success(f"🟢 Using Claude — model **{claude.model}**.")
-        else:
-            provider = LocalHeuristicProvider()
-            st.warning("No Anthropic API key found — falling back to the local "
-                       "rules engine. Enter a key above to use Claude.")
-    elif engine.startswith("Gemini"):
-        # Key resolution order: Streamlit secret → env var → password box.
-        secret_key = None
-        try:
-            secret_key = st.secrets.get("GEMINI_API_KEY") or st.secrets.get("GOOGLE_API_KEY")
-        except Exception:
-            secret_key = None
-        api_key = (secret_key or os.environ.get("GEMINI_API_KEY")
-                   or os.environ.get("GOOGLE_API_KEY"))
-        if not api_key:
-            api_key = st.text_input(
-                "Google Gemini API key", type="password",
-                help="Get one at aistudio.google.com/apikey. Or set it once in "
-                     "Streamlit secrets / the GEMINI_API_KEY env var.",
-            ).strip() or None
-        gemini_model = st.text_input(
-            "Gemini model", value=_GEMINI_DEFAULT_MODEL,
-            help="Default is a capable general model. Use e.g. gemini-2.5-flash "
-                 "for lower cost.",
-        ).strip() or _GEMINI_DEFAULT_MODEL
-        gemini = GeminiProvider(model=gemini_model, api_key=api_key)
-        if gemini.available():
-            provider = gemini
-            st.success(f"🟢 Using Gemini — model **{gemini.model}**.")
-        else:
-            provider = LocalHeuristicProvider()
-            st.warning("No Google Gemini API key found — falling back to the local "
-                       "rules engine. Enter a key above to use Gemini.")
-    else:
-        provider = LocalHeuristicProvider()
+    provider = _select_ai_provider(key_prefix="quote_")
 
     files = st.file_uploader(
         "Upload vendor quotations",
@@ -1107,6 +1113,89 @@ def render_po_validator():
         data=build_validation_excel(result),
         file_name="po_invoice_validation.xlsx", mime=XLSX_MIME,
     )
+
+
+def render_rag():
+    st.title("🔎 Procurement Knowledge Base (RAG)")
+    st.caption(
+        "Build a searchable memory of past procurement documents — quotes, POs, "
+        "contracts, AMC records — then ask questions in plain English. Answers are "
+        "grounded in your documents and **cite the source** they came from. "
+        "Retrieval runs locally (no data leaves the machine to search); only the "
+        "final answer-writing step uses the chosen AI engine."
+    )
+
+    from docdiff.rag import KnowledgeBase, answer_question
+
+    if "kb" not in st.session_state:
+        st.session_state.kb = KnowledgeBase()
+    kb = st.session_state.kb
+
+    provider = _select_ai_provider(key_prefix="rag_")
+
+    with st.expander("📥 Add documents to the knowledge base",
+                     expanded=kb.is_empty()):
+        files = st.file_uploader(
+            "Upload procurement documents",
+            type=["pdf", "docx", "xlsx", "csv", "txt", "md",
+                  "png", "jpg", "jpeg", "tiff", "tif", "bmp"],
+            accept_multiple_files=True, key="rag_files",
+            help="Quotes, POs, contracts, AMC records… Try the files in "
+                 "samples/quotes/ to see it work end to end.",
+        )
+        c1, c2 = st.columns(2)
+        if c1.button("Add to knowledge base", type="primary", key="rag_add"):
+            if files:
+                added = 0
+                with st.spinner("Reading and indexing…"):
+                    for f in files:
+                        try:
+                            n, _ = kb.add_document(f.getvalue(), f.name)
+                            added += n
+                        except Exception as e:  # noqa: BLE001
+                            st.warning(f"Couldn't read {f.name}: {e}")
+                    kb.build()
+                st.success(f"Indexed {added} passage(s) from {len(files)} file(s).")
+            else:
+                st.info("Choose some files first.")
+        if c2.button("🗑️ Clear knowledge base", key="rag_clear"):
+            st.session_state.kb = KnowledgeBase()
+            st.rerun()
+
+    if kb.is_empty():
+        st.info("The knowledge base is empty. Add a few documents above — the three "
+                "quotes in **samples/quotes/** are a good way to try it.")
+        return
+
+    retrieval = "meaning-based embeddings" if kb.used_model else "keyword (TF-IDF)"
+    st.caption(f"📚 **{len(kb.doc_names())}** document(s), **{len(kb.chunks)}** "
+               f"passages indexed · retrieval: **{retrieval}**")
+    st.write("Indexed: " + ", ".join(f"`{d}`" for d in kb.doc_names()))
+
+    question = st.text_input(
+        "Ask a question about your procurement history", key="rag_q",
+        placeholder="e.g. What warranty did GreenVolt offer? Who gave credit terms?",
+    )
+    k = st.slider("Passages to retrieve", 2, 10, 5, key="rag_k")
+
+    if st.button("Ask", type="primary", key="rag_ask") and question.strip():
+        with st.spinner("Searching the knowledge base…"):
+            res = answer_question(kb, question.strip(), provider, k=k)
+
+        st.markdown("### Answer")
+        st.markdown(res["answer"])
+        if res["used_llm"]:
+            st.caption(f"Retrieval: {res['retrieval']} · answer written by the AI "
+                       "engine, grounded in the cited sources below.")
+        else:
+            st.caption(f"Retrieval: {res['retrieval']} · no LLM engine active — "
+                       "showing the raw passages so you can read them yourself.")
+
+        st.markdown("### Sources")
+        for s in res["sources"]:
+            with st.expander(f"[{s['label']}]  {s['source']}  ·  "
+                             f"relevance {s['score']}"):
+                st.text(s["snippet"])
 
 
 if __name__ == "__main__":

@@ -73,6 +73,31 @@ class AIProvider(ABC):
         """
         return ""
 
+    def ask(self, question: str, context: str) -> str:
+        """Answer a question grounded ONLY in `context` (the retrieved excerpts).
+
+        This is the generation half of RAG. Returns "" if this provider can't do
+        free-form generation (no LLM) — the caller then shows the raw excerpts
+        instead, so the knowledge base still works without a key.
+        """
+        return ""
+
+
+# Grounding rules shared by every LLM provider's ask() — kept in one place so the
+# "answer only from the sources, cite them, never guess" guarantee is identical no
+# matter which model runs. This is what makes the knowledge base trustworthy.
+RAG_SYSTEM = (
+    "You are a procurement knowledge assistant. Answer the user's question using "
+    "ONLY the numbered source excerpts provided. Cite the sources you rely on "
+    "inline like [1], [2]. If the answer is not contained in the sources, say you "
+    "could not find it in the documents — do NOT use outside knowledge or guess. "
+    "Be specific and quote figures, dates, and vendor names exactly as written."
+)
+
+
+def _rag_user_prompt(question: str, context: str) -> str:
+    return f"SOURCES:\n{context}\n\nQUESTION: {question}"
+
 
 # --- Heuristic (no-LLM) provider ---------------------------------------------
 _GST_RE = re.compile(r"\b\d{2}[A-Z]{5}\d{4}[A-Z]\d[A-Z\d]Z[A-Z\d]\b")
@@ -275,6 +300,14 @@ class OllamaProvider(AIProvider):
         except Exception:
             return ""
 
+    def ask(self, question: str, context: str) -> str:
+        try:
+            return self._chat(
+                RAG_SYSTEM + "\n\n" + _rag_user_prompt(question, context)
+            ).strip()
+        except Exception:
+            return ""
+
 
 # --- Claude provider (Anthropic cloud API) -----------------------------------
 # Default to the most capable model. The caller can pass a cheaper one
@@ -377,6 +410,19 @@ class ClaudeProvider(AIProvider):
                        "recommendation (5-8 sentences) for a procurement committee. "
                        "Avoid jargon. Do not invent numbers — use only what's given.",
                 messages=[{"role": "user", "content": context}],
+            )
+            return self._text(resp)
+        except Exception:
+            return ""
+
+    def ask(self, question: str, context: str) -> str:
+        try:
+            resp = self._client().messages.create(
+                model=self.model,
+                max_tokens=1024,
+                system=RAG_SYSTEM,
+                messages=[{"role": "user",
+                           "content": _rag_user_prompt(question, context)}],
             )
             return self._text(resp)
         except Exception:
@@ -501,6 +547,16 @@ class GeminiProvider(AIProvider):
                 system="You are a procurement advisor. Write a concise, professional "
                        "recommendation (5-8 sentences) for a procurement committee. "
                        "Avoid jargon. Do not invent numbers — use only what's given.",
+                max_tokens=1024,
+            )
+        except Exception:
+            return ""
+
+    def ask(self, question: str, context: str) -> str:
+        try:
+            return self._generate(
+                _rag_user_prompt(question, context),
+                system=RAG_SYSTEM,
                 max_tokens=1024,
             )
         except Exception:
