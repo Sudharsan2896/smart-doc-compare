@@ -204,7 +204,7 @@ def main():
         else:
             tool = st.radio(
                 "Choose a tool",
-                ["🤖 AI Quote Analysis", "🔎 Knowledge Base (RAG)",
+                ["🧭 RFQ Agent", "🤖 AI Quote Analysis", "🔎 Knowledge Base (RAG)",
                  "🔔 AMC Monitor", "🧮 Quote Comparison",
                  "✅ PO vs Invoice Validator"],
             )
@@ -215,6 +215,7 @@ def main():
         "📄 PDF → Word": render_pdf_to_word,
         "📊 Word tables → Excel": render_word_to_excel,
         "🔀 Reconcile data": render_reconcile,
+        "🧭 RFQ Agent": render_rfq,
         "🤖 AI Quote Analysis": render_ai_quote_analysis,
         "🔎 Knowledge Base (RAG)": render_rag,
         "🔔 AMC Monitor": render_amc,
@@ -1355,6 +1356,146 @@ def render_amc():
             email = st.session_state.get(f"amc_email_{i}")
             if email:
                 st.code(email)
+
+
+_QUOTE_UPLOAD_TYPES = ["pdf", "docx", "png", "jpg", "jpeg", "webp", "tiff", "tif",
+                       "bmp", "xlsx", "csv", "txt", "md"]
+
+
+def render_rfq():
+    st.title("🧭 RFQ Agent")
+    st.caption(
+        "Run a quotation end to end: capture the requirement, draft the RFQ to "
+        "vendors, compare their replies on the weighted procurement score, and "
+        "produce an award recommendation memo. The **score decides** the "
+        "recommended vendor — the AI only drafts the wording. Two human gates: "
+        "send the RFQ, and approve the award."
+    )
+
+    from docdiff.rfq import Requirement, draft_rfq, build_award_memo
+    from docdiff.quote_intelligence import analyze_quotes
+
+    ss = st.session_state
+    provider = _select_ai_provider(key_prefix="rfq_")
+
+    # --- Stage 1 · Requirement ------------------------------------------------
+    st.subheader("1 · Define the requirement")
+    prev = ss.get("rfq_req")
+    with st.form("rfq_req_form"):
+        title = st.text_input("Title", value=prev.title if prev else "")
+        items = st.text_area("Items / specifications",
+                             value=prev.items if prev else "",
+                             placeholder="330Wp solar panels; 5kVA grid-tie "
+                                         "inverter; mounting + cabling")
+        c1, c2 = st.columns(2)
+        quantity = c1.text_input("Quantity", value=prev.quantity if prev else "")
+        needed_by = c2.text_input("Required by (date)",
+                                  value=prev.needed_by if prev else "")
+        c3, c4 = st.columns(2)
+        budget = c3.text_input("Indicative budget (optional)",
+                               value=prev.budget if prev else "")
+        buyer = c4.text_input("From (buyer / team)",
+                              value=prev.buyer if prev else
+                              "Procurement Team, SELCO Foundation")
+        notes = st.text_area("Notes (optional)", value=prev.notes if prev else "")
+        submitted = st.form_submit_button("Save requirement", type="primary")
+    if submitted:
+        if not title.strip() or not items.strip():
+            st.warning("Give at least a title and the items / specifications.")
+        else:
+            ss.rfq_req = Requirement(
+                title=title.strip(), items=items.strip(), quantity=quantity.strip(),
+                needed_by=needed_by.strip(), budget=budget.strip(),
+                notes=notes.strip(),
+                buyer=buyer.strip() or "Procurement Team, SELCO Foundation")
+            # A new requirement invalidates downstream work.
+            for k in ("rfq_drafts", "rfq_analysis", "rfq_memo"):
+                ss.pop(k, None)
+
+    if "rfq_req" not in ss:
+        st.info("Fill in the requirement above to begin.")
+        return
+    req = ss.rfq_req
+    st.success(f"Requirement set: **{req.title}**")
+
+    # --- Stage 2 · Draft RFQ --------------------------------------------------
+    st.subheader("2 · Draft the RFQ to vendors")
+    vendors_text = st.text_area("Vendors to invite (one per line)", key="rfq_vendors",
+                                placeholder="GreenVolt Energy Solutions\n"
+                                            "SunPower Solar Systems\n"
+                                            "Bright Renewables Enterprises")
+    if st.button("✍️ Draft RFQ emails", key="rfq_draft_btn"):
+        vendors = [v.strip() for v in vendors_text.splitlines() if v.strip()]
+        if not vendors:
+            st.warning("Add at least one vendor.")
+        else:
+            with st.spinner("Drafting RFQs…"):
+                ss.rfq_drafts = {v: draft_rfq(req, v, provider) for v in vendors}
+    for v, draft in ss.get("rfq_drafts", {}).items():
+        with st.expander(f"RFQ → {v}"):
+            st.code(draft)
+    if ss.get("rfq_drafts"):
+        st.info("🚦 **Gate 1** — review and send these to your vendors, then collect "
+                "their quotations and upload them below.")
+
+    # --- Stage 3 · Compare replies (reuses the scoring engine) ----------------
+    st.subheader("3 · Compare vendor replies")
+    files = st.file_uploader("Upload the vendor quotations (2+)",
+                             type=_QUOTE_UPLOAD_TYPES, accept_multiple_files=True,
+                             key="rfq_files")
+    if st.button("📊 Analyze replies", key="rfq_analyze_btn"):
+        if not files or len(files) < 2:
+            st.warning("Upload at least two quotations to compare.")
+        else:
+            with st.spinner("Reading and scoring the replies…"):
+                ss.rfq_analysis = analyze_quotes(
+                    [(f.name, f.getvalue()) for f in files], provider)
+            ss.pop("rfq_memo", None)
+
+    analysis = ss.get("rfq_analysis")
+    if analysis and analysis.get("ranking"):
+        rank = analysis["ranking"]
+        st.dataframe(
+            [{"Rank": i, "Vendor": r["name"], "Score /100": round(r["total_score"], 1)}
+             for i, r in enumerate(rank, 1)],
+            hide_index=True, use_container_width=True)
+        st.caption(f"Engine: **{analysis['provider_name']}** · highest weighted "
+                   f"score: **{rank[0]['name']}**")
+
+    # --- Stage 4 · Award memo -------------------------------------------------
+    if analysis and analysis.get("ranking"):
+        st.subheader("4 · Award recommendation memo")
+        kb = ss.get("kb")
+        has_kb = kb is not None and not kb.is_empty()
+        use_hist = False
+        if has_kb:
+            use_hist = st.checkbox(
+                "Include historical context from the Knowledge Base (RAG)",
+                value=True, key="rfq_hist",
+                help="Pulls relevant passages about these vendors/items from your "
+                     "knowledge base and gives them to the memo as context.")
+        if st.button("🧾 Generate award memo", key="rfq_memo_btn"):
+            history = ""
+            if use_hist and has_kb:
+                query = (f"{req.title} {req.items} "
+                         + " ".join(r["name"] for r in analysis["ranking"]))
+                hits = kb.query(query, k=4)
+                history = "\n".join(f"- ({h.chunk.source}) {h.chunk.text[:300]}"
+                                    for h in hits)
+            with st.spinner("Writing the award memo…"):
+                ss.rfq_memo = build_award_memo(req, analysis, provider,
+                                               history=history)
+
+        memo = ss.get("rfq_memo")
+        if memo:
+            st.markdown(memo["memo"])
+            st.download_button("⬇️ Download memo (Markdown)",
+                               data=memo["memo"].encode("utf-8"),
+                               file_name="award_recommendation.md",
+                               mime="text/markdown", key="rfq_memo_dl")
+            st.info(f"🚦 **Gate 2** — the recommended awardee **{memo['awardee']}** is "
+                    "the top of the weighted score, not an AI choice. Committee "
+                    "approval is required before award.")
 
 
 if __name__ == "__main__":
