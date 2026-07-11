@@ -1,5 +1,7 @@
 # 📑 Smart Document Comparison (MVP)
 
+[![Tests](https://github.com/Sudharsan2896/smart-doc-compare/actions/workflows/tests.yml/badge.svg)](https://github.com/Sudharsan2896/smart-doc-compare/actions/workflows/tests.yml)
+
 Compares two contracts by **meaning**, not just text. It matches clauses even
 when they've been **reordered**, flags **changed numbers** loudly, and ranks the
 important changes at the top.
