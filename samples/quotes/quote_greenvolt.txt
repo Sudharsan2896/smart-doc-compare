@@ -1,0 +1,29 @@
+Greetings from GreenVolt Energy Solutions Pvt Ltd
+
+Quotation Reference : GV-Q-2026-1188
+Quotation Date      : 05 July 2026
+Customer            : SELCO Foundation
+
+We thank you for the opportunity to quote for solar equipment for your
+rural health centre electrification project.
+
+Sl | Item                                     | Qty | Rate (Rs) | Value (Rs)
+1  | 330Wp Solar PV Module                    | 40  | 6,650     | 2,66,000
+2  | 5kVA Grid-Tie Inverter (with monitoring) | 1   | 71,000    | 71,000
+3  | Structure, Cabling & Accessories (lot)   | 1   | 30,000    | 30,000
+
+Total Basic Value : Rs 3,67,000
+GST @ 18%         : Rs 66,060
+Total Payable     : Rs 4,33,060
+
+Payment Terms    : 30 days credit from date of delivery.
+Delivery Timeline: 3 weeks from receipt of order.
+Warranty         : 12 years on solar modules, 5 years on inverter.
+Freight/Transport: Included (delivered to site).
+Validity         : Offer valid for 30 days.
+GST / Taxes      : GSTIN 29GVOLT5678K1Z2, GST 18% as shown above.
+Additional Terms : Free installation and commissioning. 2 years comprehensive
+                   AMC included. Operator training provided on site.
+
+Warm regards,
+GreenVolt Energy Solutions Pvt Ltd

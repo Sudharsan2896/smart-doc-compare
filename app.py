@@ -699,8 +699,10 @@ def render_ai_quote_analysis():
     files = st.file_uploader(
         "Upload vendor quotations",
         type=["pdf", "docx", "png", "jpg", "jpeg", "webp", "tiff", "tif", "bmp",
-              "xlsx", "csv"],
+              "xlsx", "csv", "txt", "md"],
         accept_multiple_files=True, key="ai_quote_files",
+        help="You can also try the ready-made samples in samples/quotes/ "
+             "(three solar-equipment quotes) to see the analysis end to end.",
     )
     if not files:
         st.info("⬆️ Upload at least two quotations to begin.")

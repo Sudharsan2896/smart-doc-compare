@@ -1,0 +1,32 @@
+Greetings from SunPower Solar Systems Pvt Ltd
+
+Quotation No: SPS/2026/0417
+Date: 03 July 2026
+To: SELCO Foundation, Bengaluru
+Subject: Supply of Solar Power Equipment for Rural Health Centre
+
+Dear Sir/Madam,
+
+Thank you for your enquiry. We are pleased to submit our quotation as below:
+
+Item | Description                          | Qty | Unit Price (Rs) | Amount (Rs)
+1    | 330Wp Polycrystalline Solar Panel    | 40  | 6,200           | 2,48,000
+2    | 5kVA Grid-Tie Solar Inverter         | 1   | 62,000          | 62,000
+3    | Mounting Structure & Cabling (lot)   | 1   | 28,000          | 28,000
+
+Sub Total : Rs 3,38,000
+GST @ 18% : Rs 60,840
+Grand Total: Rs 3,98,840
+
+Payment Terms   : 100% advance along with the purchase order.
+Delivery        : Within 10 days of confirmed order.
+Warranty        : 5 years on panels, 1 year on inverter.
+Freight/Transport: Extra at actuals, to be borne by the buyer.
+Validity        : This offer is valid for 15 days.
+GSTIN           : 29ABCDE1234F1Z5
+
+Installation and commissioning can be arranged at extra cost.
+
+Regards,
+Sales Team
+SunPower Solar Systems Pvt Ltd
