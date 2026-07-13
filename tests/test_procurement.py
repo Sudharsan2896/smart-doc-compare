@@ -18,6 +18,11 @@ from docdiff.quote_intelligence import analyze_quotes
 from docdiff.amc import analyze_amc, draft_reminder, guess_column
 from docdiff.rag import KnowledgeBase
 from docdiff.rfq import Requirement, draft_rfq, build_award_memo
+from docdiff.summary import narrative_from_summary
+from docdiff.benchmark import benchmark_price, _amounts, _median
+from docdiff.classify import (
+    classify_item, classify_items, category_summary, UNCATEGORISED,
+)
 
 REPO = Path(__file__).resolve().parents[1]
 QUOTES = REPO / "samples" / "quotes"
@@ -137,6 +142,100 @@ def test_rfq_draft_has_subject_and_vendor():
     draft = draft_rfq(req, "GreenVolt Energy", provider=None)
     assert draft.startswith("Subject:")
     assert "GreenVolt Energy" in draft
+
+
+# --- doc-compare AI summary layer --------------------------------------------
+def test_summary_narrative_fallback_and_grounding():
+    summary = {"total": 3, "commercial": ["Pricing changed from 100 to 120."],
+               "legal": [], "operational": [], "risks": ["Warranty period reduced."]}
+    empty = {"total": 0, "commercial": [], "legal": [], "operational": [], "risks": []}
+
+    # No LLM -> "" (the rule-based summary is shown on its own).
+    assert narrative_from_summary(summary, None) == ""
+
+    # Capture the prompt to assert on it OUTSIDE write() — narrative_from_summary
+    # swallows exceptions (graceful fallback), so asserting inside write() would be
+    # silently turned into an empty result instead of a test failure.
+    captured = {}
+
+    class StubLLM(AIProvider):
+        name = "stub"
+
+        def available(self):
+            return True
+
+        def extract(self, *a, **k):
+            return {}
+
+        def write(self, instruction):
+            captured["prompt"] = instruction
+            return "Cost rose and warranty shrank; verify both before signing."
+
+    # Empty summary -> "" even with an LLM (nothing to narrate); write() not called.
+    assert narrative_from_summary(empty, StubLLM()) == ""
+    assert "prompt" not in captured
+
+    out = narrative_from_summary(summary, StubLLM())
+    assert "warranty" in out.lower()
+    assert "Pricing changed from 100 to 120" in captured["prompt"]  # grounded
+    assert "invent" in captured["prompt"].lower()                    # no-invent rule
+
+
+# --- benchmark assistant -----------------------------------------------------
+def test_benchmark_helpers():
+    assert _amounts("Total Rs 3,38,000 and GST Rs 60,840") == [338000.0, 60840.0]
+    assert _median([10, 20, 30]) == 20
+    assert _median([10, 20, 30, 40]) == 25
+
+
+def test_benchmark_verdict_is_deterministic():
+    kb = KnowledgeBase()
+    kb.add_text("Solar panel 330Wp total Rs 3,00,000", "hist1.txt")
+    kb.add_text("Solar panel 330Wp grand total Rs 4,00,000", "hist2.txt")
+    kb.build()
+    res = benchmark_price(kb, "solar panel", proposed_price=500000.0, provider=None)
+    assert res["count"] >= 1
+    assert res["median"] > 0
+    assert "ABOVE" in res["verdict"]      # 500k vs median 350k
+    assert res["narrative"] == ""          # no LLM -> no narrative
+
+
+# --- spend classifier --------------------------------------------------------
+def test_classify_rules():
+    assert classify_item("330Wp solar panel and inverter")["category"] == "Solar & Energy"
+    assert classify_item("Dell laptop i5")["category"] == "IT & Electronics"
+    r = classify_item("xyzzy unknown thing", provider=None)
+    assert r["category"] == UNCATEGORISED and r["confidence"] == 0.0
+
+
+def test_classify_llm_is_bounded_to_the_category_list():
+    class StubLLM(AIProvider):
+        name = "stub"
+
+        def available(self):
+            return True
+
+        def extract(self, *a, **k):
+            return {}
+
+        def write(self, instruction):
+            assert "Categories:" in instruction
+            return "Furniture"  # a valid category
+
+    r = classify_item("mysterious item", provider=StubLLM())
+    assert r["category"] == "Furniture" and r["method"] == "ai"
+
+    class BadLLM(StubLLM):
+        def write(self, instruction):
+            return "Spaceships"  # not an allowed category
+
+    r2 = classify_item("mysterious item", provider=BadLLM())
+    assert r2["category"] == UNCATEGORISED  # invalid LLM answer is rejected
+
+
+def test_category_summary_counts():
+    summ = category_summary(classify_items(["solar panel", "laptop", "solar inverter"]))
+    assert summ.get("Solar & Energy") == 2
 
 
 # --- provider abstraction fallbacks ------------------------------------------

@@ -159,9 +159,12 @@ def _copy_button(text: str, key: str = "copy"):
     )
 
 
-def _render_executive_summary(changes):
-    """Feature 2: business-friendly summary of the differences (rule-based)."""
-    from docdiff.summary import summarize_changes, summary_to_text
+def _render_executive_summary(changes, provider=None):
+    """Feature 2: business-friendly summary of the differences (rule-based), with
+    an optional AI 'why this matters' narrative grounded in that summary."""
+    from docdiff.summary import (
+        summarize_changes, summary_to_text, narrative_from_summary,
+    )
 
     summary = summarize_changes(changes)
 
@@ -188,6 +191,17 @@ def _render_executive_summary(changes):
 
     _copy_button(summary_to_text(summary), key="exec_summary")
 
+    # Optional AI narrative — grounded in the rule-based summary above.
+    if provider is not None and summary["total"] > 0:
+        with st.spinner("Writing the AI insight…"):
+            narrative = narrative_from_summary(summary, provider)
+        if narrative:
+            st.markdown("#### 🧠 AI insight — why these changes matter")
+            st.markdown(narrative)
+            st.caption("Written by the AI engine, grounded in the summary above. "
+                       "Review before relying on it.")
+            _copy_button(narrative, key="ai_insight")
+
 
 def main():
     """Pick a toolkit section and a tool from the sidebar, then show it."""
@@ -205,8 +219,8 @@ def main():
             tool = st.radio(
                 "Choose a tool",
                 ["🧭 RFQ Agent", "🤖 AI Quote Analysis", "🔎 Knowledge Base (RAG)",
-                 "🔔 AMC Monitor", "🧮 Quote Comparison",
-                 "✅ PO vs Invoice Validator"],
+                 "📈 Benchmark Assistant", "🏷️ Spend Classifier", "🔔 AMC Monitor",
+                 "🧮 Quote Comparison", "✅ PO vs Invoice Validator"],
             )
         st.divider()
 
@@ -218,6 +232,8 @@ def main():
         "🧭 RFQ Agent": render_rfq,
         "🤖 AI Quote Analysis": render_ai_quote_analysis,
         "🔎 Knowledge Base (RAG)": render_rag,
+        "📈 Benchmark Assistant": render_benchmark,
+        "🏷️ Spend Classifier": render_classify,
         "🔔 AMC Monitor": render_amc,
         "🧮 Quote Comparison": render_quote_comparison,
         "✅ PO vs Invoice Validator": render_po_validator,
@@ -329,8 +345,13 @@ def _render_results(changes, old_segs, new_segs, show_formatting):
         st.success("No material changes found. 🎉")
         return
 
-    # ---------- Executive summary (business-friendly, rule-based) ----------
-    _render_executive_summary(visible)
+    # ---------- Executive summary (rule-based, + optional AI insight) ----------
+    with st.expander("🧠 Add an AI insight (optional — needs an engine/key)"):
+        st.caption("The summary below is always rule-based and offline. Pick a "
+                   "cloud/Ollama engine here to also get a short AI explanation of "
+                   "why the changes matter, grounded in that summary.")
+        compare_provider = _select_ai_provider(key_prefix="compare_")
+    _render_executive_summary(visible, provider=compare_provider)
 
     # ---------- Export ----------
     st.download_button(
@@ -1496,6 +1517,115 @@ def render_rfq():
             st.info(f"🚦 **Gate 2** — the recommended awardee **{memo['awardee']}** is "
                     "the top of the weighted score, not an AI choice. Committee "
                     "approval is required before award.")
+
+
+def render_benchmark():
+    st.title("📈 Benchmark Assistant")
+    st.caption(
+        "Check whether a quoted price is reasonable **against your own history**. "
+        "It benchmarks the price using the Knowledge Base (RAG) you've built — the "
+        "median comes from figures in your past documents (deterministic), and the "
+        "sources are shown so you can verify every number."
+    )
+
+    from docdiff.benchmark import benchmark_price
+
+    ss = st.session_state
+    kb = ss.get("kb")
+    if kb is None or kb.is_empty():
+        st.info("The knowledge base is empty. Go to **🔎 Knowledge Base (RAG)**, add "
+                "past quotes/POs (the files in samples/quotes/ work), then return.")
+        return
+
+    st.caption(f"📚 Benchmarking against **{len(kb.doc_names())}** document(s) in the "
+               "knowledge base.")
+    provider = _select_ai_provider(key_prefix="bench_")
+
+    item = st.text_input("Item / description",
+                         placeholder="e.g. 330Wp solar panel", key="bench_item")
+    proposed = st.number_input("Proposed price (₹, optional)", min_value=0.0,
+                               value=0.0, step=1000.0, key="bench_price")
+
+    if st.button("Benchmark", type="primary", key="bench_btn") and item.strip():
+        with st.spinner("Searching your history…"):
+            res = benchmark_price(kb, item.strip(), proposed or None, provider)
+        st.markdown(f"### {res['verdict']}")
+        if res["count"]:
+            m = st.columns(4)
+            m[0].metric("Comparable figures", res["count"])
+            m[1].metric("Median", f"₹{res['median']:,.0f}")
+            m[2].metric("Min", f"₹{res['min']:,.0f}")
+            m[3].metric("Max", f"₹{res['max']:,.0f}")
+            if res.get("narrative"):
+                st.markdown("#### 🧠 AI note")
+                st.markdown(res["narrative"])
+            st.markdown("#### Sources")
+            for s in res["sources"]:
+                amts = ", ".join(f"₹{a:,.0f}" for a in s["amounts"])
+                with st.expander(f"{s['source']} · figures: {amts}"):
+                    st.text(s["snippet"])
+
+
+def render_classify():
+    st.title("🏷️ Spend Classifier")
+    st.caption(
+        "Sort purchase line items into spend categories for analytics / GL coding. "
+        "Keyword rules do the bulk; an optional AI engine handles the leftovers "
+        "(choosing only from the fixed category list — it can't invent one); "
+        "anything still unresolved is flagged **Uncategorised** for manual review."
+    )
+
+    from docdiff.classify import (
+        classify_items, category_summary, results_to_csv, CATEGORY_KEYWORDS,
+    )
+
+    provider = _select_ai_provider(key_prefix="cls_")
+    st.caption("Categories: " + " · ".join(CATEGORY_KEYWORDS.keys()))
+
+    descriptions: list[str] = []
+    tab_paste, tab_file = st.tabs(["Paste items", "Upload a table"])
+    with tab_paste:
+        text = st.text_area("One item per line", key="cls_text",
+                            placeholder="330Wp solar panel\nLaptop Dell i5\n"
+                                        "AMC for water purifier")
+        if text.strip():
+            descriptions = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    with tab_file:
+        f = st.file_uploader("Upload xlsx/csv", type=["xlsx", "csv"], key="cls_file")
+        if f is not None:
+            from docdiff.tables import file_to_dataframe
+            df = file_to_dataframe(f.getvalue(), f.name)
+            if df is not None and not df.empty:
+                col = st.selectbox("Item description column", list(df.columns),
+                                   key="cls_col")
+                descriptions = [str(x) for x in df[col].tolist() if str(x).strip()]
+
+    if st.button("Classify", type="primary", key="cls_btn"):
+        if not descriptions:
+            st.warning("Add some items (paste a list or upload a table) first.")
+            return
+        with st.spinner("Classifying…"):
+            results = classify_items(descriptions, provider)
+
+        low = [r for r in results if r["confidence"] < 0.7]
+        st.caption(f"**{len(results)}** items · **{len(low)}** low-confidence / "
+                   "uncategorised (worth a manual check).")
+
+        st.markdown("#### Spend mix")
+        summ = category_summary(results)
+        st.dataframe([{"Category": k, "Items": v} for k, v in summ.items()],
+                     hide_index=True, use_container_width=True)
+
+        st.markdown("#### Classified items")
+        st.dataframe(
+            [{"Description": r["description"], "Category": r["category"],
+              "Confidence": r["confidence"], "Method": r["method"]}
+             for r in results],
+            hide_index=True, use_container_width=True)
+        st.download_button("⬇️ Download classified items (CSV)",
+                           data=results_to_csv(results),
+                           file_name="spend_classified.csv", mime="text/csv",
+                           key="cls_dl")
 
 
 if __name__ == "__main__":

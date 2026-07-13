@@ -216,3 +216,26 @@ def summary_to_text(summary: dict) -> str:
             lines.extend(f"  - {b}" for b in bullets)
             lines.append("")
     return "\n".join(lines).strip()
+
+
+def narrative_from_summary(summary: dict, provider) -> str:
+    """Optional AI narrative: WHY the detected changes matter and what to check
+    before signing. Grounded ONLY in the rule-based summary above (so it can't
+    invent clauses), and returns "" when no LLM engine is active — the rule-based
+    summary is always shown regardless."""
+    if provider is None:
+        return ""
+    facts = summary_to_text(summary)
+    if summary.get("total", 0) == 0 or not facts.strip():
+        return ""
+    instruction = (
+        "You are a procurement contract analyst. Based ONLY on the summary of "
+        "detected contract changes below, write 3-5 sentences for a procurement "
+        "manager explaining why these changes matter and what to check before "
+        "signing. Lead with the most important point. Do NOT invent clauses, "
+        "numbers, or terms that are not in the summary.\n\n" + facts
+    )
+    try:
+        return provider.write(instruction).strip()
+    except Exception:
+        return ""

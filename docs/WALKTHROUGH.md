@@ -275,14 +275,17 @@ docdiff/
   ai_providers.py     The four AI engines behind one interface (extract/reason/ask/write)
   quote_intelligence.py  The deterministic scoring engine (analyze_quotes, SCORE_WEIGHTS)
   rag.py              Knowledge base: chunking, retrieval (embeddings + keyword), grounded Q&A
+  benchmark.py        "Is this price reasonable?" — median from history via RAG
+  classify.py         Spend classifier: keyword rules + LLM bounded to a fixed list
   amc.py              AMC classification, ranking, reminder drafting
   rfq.py              RFQ requirement, draft, and award memo (composes the above)
+  summary.py          Rule-based change summary + optional grounded AI narrative
   align.py            The local embedding model (shared by clause-compare and RAG)
   extract.py / ocr.py / tables.py   Read text/tables out of any file format
   compare.py / segment.py / numbers.py / export.py   The original document-comparison pipeline
 app.py                The Streamlit UI (one provider selector, one render_* per tool)
 run_amc.py            Headless AMC monitor for the scheduled job
-.github/workflows/amc-monitor.yml   Daily automation
+.github/workflows/{amc-monitor,tests}.yml   Daily automation + CI
 ```
 
 ---
