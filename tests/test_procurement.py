@@ -238,6 +238,36 @@ def test_category_summary_counts():
     assert summ.get("Solar & Energy") == 2
 
 
+# --- headless AMC runner (CI regression) -------------------------------------
+def test_env_treats_empty_as_unset(monkeypatch):
+    """GitHub Actions injects an unset `${{ vars.X }}` as an EMPTY string, so a
+    plain os.environ.get(name, default) returns "" instead of the default. env()
+    must fall back to the default for empty/whitespace values."""
+    import run_amc
+    monkeypatch.delenv("AMC_TEST_X", raising=False)
+    assert run_amc.env("AMC_TEST_X", "d") == "d"       # unset -> default
+    monkeypatch.setenv("AMC_TEST_X", "")
+    assert run_amc.env("AMC_TEST_X", "d") == "d"       # empty -> default (the bug)
+    monkeypatch.setenv("AMC_TEST_X", "   ")
+    assert run_amc.env("AMC_TEST_X", "d") == "d"       # whitespace -> default
+    monkeypatch.setenv("AMC_TEST_X", "v")
+    assert run_amc.env("AMC_TEST_X", "d") == "v"       # set -> value
+
+
+def test_amc_runner_survives_empty_register_env(monkeypatch, tmp_path):
+    """Reproduces the CI failure: AMC_REGISTER_PATH="" must fall back to the
+    default sample and the run must succeed (exit 0)."""
+    import os
+    import run_amc
+    monkeypatch.setenv("AMC_REGISTER_PATH", "")   # the empty-string CI condition
+    monkeypatch.setenv("AMC_CRITICAL_DAYS", "")    # would have crashed int("")
+    monkeypatch.chdir(tmp_path)                     # write outputs into a temp dir
+    # DEFAULT_REGISTER is repo-relative; point it at the real sample by absolute path.
+    monkeypatch.setattr(run_amc, "DEFAULT_REGISTER", str(AMC_CSV))
+    assert run_amc.main() == 0
+    assert (tmp_path / "amc_digest.md").exists()
+
+
 # --- provider abstraction fallbacks ------------------------------------------
 def test_local_provider_generation_methods_return_empty():
     p = LocalHeuristicProvider()

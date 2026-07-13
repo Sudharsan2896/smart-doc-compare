@@ -45,6 +45,14 @@ _COL_ENV = {
 }
 
 
+def env(name: str, default: str = "") -> str:
+    """Like os.environ.get, but treats an EMPTY value as unset. GitHub Actions
+    substitutes an unset `${{ vars.X }}` as an empty string, so a plain
+    os.environ.get(name, default) would return "" instead of the default."""
+    value = os.environ.get(name)
+    return value if (value is not None and value.strip()) else default
+
+
 def read_register(path: str) -> list[dict]:
     ext = path.lower().rsplit(".", 1)[-1] if "." in path else ""
     if ext == "csv":
@@ -146,8 +154,8 @@ def maybe_send_email(subject: str, body: str) -> bool:
         print("SMTP not fully configured — skipping email "
               "(digest is still written to the report and the run summary).")
         return False
-    port = int(os.environ.get("SMTP_PORT", "587"))
-    sender = os.environ.get("AMC_EMAIL_FROM", user)
+    port = int(env("SMTP_PORT", "587"))
+    sender = env("AMC_EMAIL_FROM", user)
 
     import smtplib
     import ssl
@@ -181,7 +189,7 @@ def _write_step_summary(markdown: str) -> None:
 
 
 def main() -> int:
-    path = os.environ.get("AMC_REGISTER_PATH", DEFAULT_REGISTER)
+    path = env("AMC_REGISTER_PATH", DEFAULT_REGISTER)
     if not os.path.exists(path):
         print(f"AMC register not found: {path}", file=sys.stderr)
         return 1
@@ -199,8 +207,8 @@ def main() -> int:
               file=sys.stderr)
         return 1
 
-    critical_days = int(os.environ.get("AMC_CRITICAL_DAYS", "15"))
-    due_days = int(os.environ.get("AMC_DUE_DAYS", "45"))
+    critical_days = int(env("AMC_CRITICAL_DAYS", "15"))
+    due_days = int(env("AMC_DUE_DAYS", "45"))
     provider = get_provider()
 
     result = analyze_amc(rows, col_map, today=date.today(),
