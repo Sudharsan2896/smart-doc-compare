@@ -1,53 +1,62 @@
-# 📑 Smart Document Comparison (MVP)
+# 🧭 AI Procurement Assistant
 
-[![Tests](https://github.com/Sudharsan2896/smart-doc-compare/actions/workflows/tests.yml/badge.svg)](https://github.com/Sudharsan2896/smart-doc-compare/actions/workflows/tests.yml)
+[![Tests](https://github.com/Sudharsan2896/ai-procurement-assistant/actions/workflows/tests.yml/badge.svg)](https://github.com/Sudharsan2896/ai-procurement-assistant/actions/workflows/tests.yml)
 
-Compares two contracts by **meaning**, not just text. It matches clauses even
-when they've been **reordered**, flags **changed numbers** loudly, and ranks the
-important changes at the top.
+An AI-powered toolkit for a real procurement function: read messy vendor
+documents in any format, score and compare quotes, remember past dealings, watch
+renewal dates on their own, and run a quotation from requirement to award
+recommendation.
 
-This first version is **free and fully local** — no AI API key, and no document
-text ever leaves the app.
+Every tool works **free and offline with no API key** — a local model and rule
+engines do the baseline. Plug in **Claude, Gemini, or a local Ollama** model and
+the same tools get sharper. Nothing is ever *blocked* on having a key.
 
-> 📖 This tool has grown into a full **AI-powered procurement toolkit** —
-> quote analysis, a searchable knowledge base (RAG), an autonomous AMC renewal
-> monitor, and an end-to-end RFQ agent. See the
-> **[Procurement Toolkit walkthrough](docs/WALKTHROUGH.md)** for the whole story.
-
----
-
-## What it does (in plain English)
-
-You upload two versions of a contract (an "original" and a "revised"). The app:
-
-1. **Reads** the text out of each file (digital PDF or Word `.docx`).
-2. **Splits** each document into clauses, using the clause numbering (1, 1.1, (a)…).
-3. **Matches** each clause in the original to its counterpart in the revised
-   version — *by meaning*, so a clause that was moved or lightly reworded is still
-   recognised as the same clause.
-4. **Compares** each matched pair: shows the word-level change, and — crucially —
-   pulls out every number and compares the figures explicitly.
-5. **Presents** a ranked list: number changes first, then added/removed clauses,
-   then wording changes, then trivial formatting (hidden by default). You can
-   download the whole thing as an **Excel report**.
+> **The one idea behind everything:** the AI never makes a decision that has a
+> right answer — code does; the AI only writes the words around it. Vendor
+> rankings, renewal urgency, the recommended awardee: all auditable arithmetic. A
+> model only extracts fields, summarises, and drafts. See the
+> **[full walkthrough](docs/WALKTHROUGH.md)** for how it all fits together.
 
 ---
 
-## How "matching by meaning" works (the clever bit)
+## The tools
 
-Each clause is converted into a list of numbers (a "fingerprint" of its meaning)
-by a small language model that runs **on this machine** — no internet call, no
-API key. Clauses that mean similar things get similar fingerprints. The app then
-finds the single best pairing between the two documents' clauses. Because it
-pairs on meaning rather than position, **a reordered clause is still matched to
-the right counterpart.**
+Pick **Document Tools** or **Procurement Toolkit** in the sidebar.
 
-The model is `all-MiniLM-L6-v2` (~90 MB). It downloads automatically the first
-time you run a comparison, then is cached.
+### Procurement Toolkit
+| Tool | What it does |
+|---|---|
+| 🧭 **RFQ Agent** | Runs a quotation end to end: capture requirement → draft RFQs → score replies → award memo, with two human approval gates |
+| 🤖 **AI Quote Analysis** | Upload 2–10 quotes in any format; extracts terms, scores on a weighted procurement score, ranks, and recommends |
+| 🔎 **Knowledge Base (RAG)** | A searchable memory of past quotes/POs/contracts; ask questions in plain English and get answers that **cite the source** |
+| 📈 **Benchmark Assistant** | "Is this price reasonable?" — benchmarks a quote against figures in your own history |
+| 🏷️ **Spend Classifier** | Sorts purchase line items into spend categories for analytics / GL coding |
+| 🔔 **AMC Monitor** | Flags Annual Maintenance Contracts that are expired / due, ranked by urgency, and drafts renewal reminders — with a [daily autonomous run](docs/amc-automation.md) |
+| 🧮 **Quote Comparison** · ✅ **PO vs Invoice Validator** | Tabular quote comparison and PO/invoice reconciliation |
 
-> If the model ever fails to load, the app automatically falls back to a simpler
-> text-similarity match so it still works — just a little less clever about
-> heavy paraphrasing.
+### Document Tools
+| Tool | What it does |
+|---|---|
+| 📑 **Compare documents** | Compares two contracts by **meaning**, not just text — matches clauses even when reordered, flags changed numbers loudly, ranks the important changes first, with an optional AI "why this matters" insight |
+| 📄 **PDF → Word** · 📊 **Word tables → Excel** · 🔀 **Reconcile data** | Format conversion and data reconciliation utilities |
+
+---
+
+## Four interchangeable AI engines
+
+Every AI step goes through one interface, so you can swap the "brain" without
+touching any scoring logic:
+
+| Engine | Needs | Notes |
+|---|---|---|
+| **Local rules** | nothing | Works anywhere, no key — the default |
+| **Ollama** | Ollama running locally | A local open-source LLM, fully private |
+| **Claude** | `ANTHROPIC_API_KEY` | Anthropic's cloud API |
+| **Gemini** | `GEMINI_API_KEY` | Google's cloud API |
+
+The local embedding model for meaning-based search (`all-MiniLM-L6-v2`, ~90 MB)
+downloads once and runs on-device — document text never leaves the machine for
+the *search* step. Only the optional cloud engines send text to a provider.
 
 ---
 
@@ -58,70 +67,61 @@ pip install -r requirements.txt
 streamlit run app.py
 ```
 
-Then open the link it prints (usually http://localhost:8501).
+Open the link it prints (usually http://localhost:8501). Everything works with
+**no key**; to use a cloud engine, select it in a tool and paste a key (or set
+`ANTHROPIC_API_KEY` / `GEMINI_API_KEY`).
 
-To sanity-check the engine without the UI or the model:
+Try it end to end with the bundled sample data: `samples/quotes/` (three vendor
+quotes) and `samples/amc/amc_register.csv`.
+
+## Deploy free (Streamlit Community Cloud)
+
+Push to GitHub, then at **share.streamlit.io** create a new app pointing at this
+repo with the main file `app.py`. It works out of the box with no configuration;
+add any API keys as Streamlit **secrets** if you want the cloud engines.
+
+## Tests
 
 ```bash
-python selftest.py
+pip install -r requirements-dev.txt
+pytest -q
 ```
 
----
-
-## Deploy it free (Streamlit Community Cloud)
-
-1. Create a free GitHub account if you don't have one.
-2. Put this whole folder into a new GitHub repository.
-3. Go to **share.streamlit.io**, sign in with GitHub, click **New app**.
-4. Pick your repo and set the main file to `app.py`.
-5. Click **Deploy**. The first build takes a few minutes (it installs the
-   packages and downloads the model). After that it's live at a shareable URL.
-
-No secrets or API keys to configure — it's entirely self-contained.
+The deterministic engines are covered by a fast, dependency-light suite (no
+model/key needed) that runs in CI on every push. See
+**[docs/VERIFY.md](docs/VERIFY.md)** for a checklist to verify the live LLM and
+embedding paths after deploying.
 
 ---
 
 ## Project layout
 
 ```
-app.py                 The Streamlit user interface (drawing only)
+app.py                   Streamlit UI — one engine selector, one tool per screen
 docdiff/
-  extract.py           Stage 1 — read text from PDF / .docx
-  segment.py           Stage 2 — split text into clauses
-  align.py             Stage 3 — match clauses by meaning (local model)
-  numbers.py           Number extraction + comparison
-  compare.py           Stage 4 — classify & rank each change
-  export.py            Stage 5 — Excel report
-samples/               Two example contracts for testing
-selftest.py            Runs the engine on the samples and prints results
-requirements.txt       The packages to install
+  ai_providers.py        The four AI engines behind one interface
+  quote_intelligence.py  Deterministic weighted vendor scoring (analyze_quotes)
+  rag.py                 Knowledge base: chunking, retrieval, grounded Q&A
+  benchmark.py           Price benchmarking against history
+  classify.py            Spend classification (rules + bounded LLM)
+  amc.py                 AMC classification, ranking, reminder drafting
+  rfq.py                 RFQ requirement, draft, and award memo
+  summary.py             Change summary + optional AI narrative
+  align.py               Local embedding model (shared by compare + RAG)
+  extract.py ocr.py tables.py   Read text/tables from any file format
+  compare.py segment.py numbers.py export.py   Document-comparison pipeline
+run_amc.py               Headless AMC monitor for the daily scheduled run
+tests/                   Deterministic-engine smoke tests
+samples/                 Sample quotes + AMC register
+.github/workflows/       tests.yml (CI) · amc-monitor.yml (daily AMC run)
+docs/                    Walkthrough, AMC automation, verify checklist, roadmap
 ```
-
-The five stages are deliberately separate modules so the roadmap items below can
-be added without rewriting what already works.
 
 ---
 
-## What's intentionally NOT in this MVP (the roadmap)
+## Docs
 
-In priority order, matching the project plan:
-
-1. **OCR for scanned PDFs** — read text out of photographed/scanned documents
-   (PaddleOCR / PP-Structure). Today, a scanned PDF is detected and flagged, not
-   read.
-2. **Table & number hardening** — proper table extraction and smarter handling of
-   dates, durations, and figures inside tables.
-3. **Optional AI "meaning summary" layer** — a one-line plain-English summary of
-   *why* each change matters. This is the one piece that may use a cloud AI API.
-
-### The one deferred decision
-
-For that future AI summary layer:
-
-| Option | Pros | Cons |
-|---|---|---|
-| **Local model** (current default) | Free, fully private, nothing sent out | Slightly weaker summaries |
-| **Cloud AI API** | Sharper summaries | Small cost, sends contract text to a provider |
-
-Everything in this MVP uses the **local** option. The cloud option is only worth
-revisiting for the optional summary layer, and only if privacy rules allow it.
+- **[Walkthrough](docs/WALKTHROUGH.md)** — how the tools fit together and the design principles
+- **[AMC automation](docs/amc-automation.md)** — set up the daily renewal-monitor run
+- **[Verify checklist](docs/VERIFY.md)** — prove the live LLM/embedding paths after deploy
+- **[Apprenticeship roadmap](docs/AI-APPRENTICESHIP-ROADMAP.md)** — where this goes next
