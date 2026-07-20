@@ -23,7 +23,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-import numpy as np
+# numpy is imported lazily inside the functions that need it (below). This keeps
+# the Pair dataclass — and therefore docdiff.compare, which imports Pair — usable
+# on a machine without the ML stack (e.g. CI running the deterministic tests).
 
 from .segment import Segment
 
@@ -48,13 +50,15 @@ def _load_model():
         return None
 
 
-def _embed(model, texts: list[str]) -> np.ndarray:
+def _embed(model, texts: list[str]) -> "np.ndarray":
+    import numpy as np
     vecs = model.encode(texts, convert_to_numpy=True, normalize_embeddings=True)
     return np.asarray(vecs, dtype=np.float32)
 
 
-def _similarity_matrix(old: list[Segment], new: list[Segment], model) -> np.ndarray:
+def _similarity_matrix(old: list[Segment], new: list[Segment], model) -> "np.ndarray":
     """Return an (len(old) x len(new)) matrix of 0..1 similarity scores."""
+    import numpy as np
     if model is not None:
         eo = _embed(model, [s.text for s in old])
         en = _embed(model, [s.text for s in new])

@@ -18,7 +18,11 @@ from docdiff.quote_intelligence import analyze_quotes
 from docdiff.amc import analyze_amc, draft_reminder, guess_column
 from docdiff.rag import KnowledgeBase
 from docdiff.rfq import Requirement, draft_rfq, build_award_memo
-from docdiff.summary import narrative_from_summary
+from docdiff.summary import narrative_from_summary, summarize_changes
+from docdiff.segment import segment, Segment
+from docdiff.numbers import extract_numbers, diff_numbers
+from docdiff.align import Pair
+from docdiff.compare import compare_pairs
 from docdiff.benchmark import benchmark_price, _amounts, _median
 from docdiff.classify import (
     classify_item, classify_items, category_summary, UNCATEGORISED,
@@ -266,6 +270,68 @@ def test_amc_runner_survives_empty_register_env(monkeypatch, tmp_path):
     monkeypatch.setattr(run_amc, "DEFAULT_REGISTER", str(AMC_CSV))
     assert run_amc.main() == 0
     assert (tmp_path / "amc_digest.md").exists()
+
+
+# --- document-comparison pipeline (deterministic parts, no ML stack) ---------
+def test_segment_splits_by_clause_number():
+    # segment() uses clause mode only when >=3 clause markers are present,
+    # otherwise it treats the text as prose (paragraph mode).
+    text = ("1. Payment terms are net 30.\n"
+            "2. Delivery within 45 days.\n"
+            "3. Warranty is 12 months.")
+    segs = segment(text)
+    assert len(segs) == 3
+    assert segs[0].label.startswith("1")
+    assert "Payment" in segs[0].text
+
+
+def test_extract_numbers_types_and_values():
+    nums = extract_numbers("Fee is $1,250.00, discount 30% on 42 units")
+    units = {n.unit for n in nums}
+    assert "money" in units and "percent" in units
+    assert next(n for n in nums if n.unit == "money").value == 1250.0
+
+
+def test_diff_numbers_detects_change():
+    changes = diff_numbers("Payment within 30 days", "Payment within 45 days")
+    assert any("30" in c.old and "45" in c.new for c in changes)
+
+
+def test_compare_pairs_number_change():
+    old = Segment("1", "Payment within 30 days")
+    new = Segment("1", "Payment within 45 days")
+    changes = compare_pairs([Pair(old=old, new=new, similarity=0.9)])
+    assert len(changes) == 1
+    assert changes[0].category == "Number change"
+    assert changes[0].number_changes
+
+
+def test_compare_pairs_added_removed_and_identical():
+    s = Segment("2", "New confidentiality clause")
+    assert compare_pairs([Pair(None, s, 0.0)])[0].category == "Clause added"
+    assert compare_pairs([Pair(s, None, 0.0)])[0].category == "Clause removed"
+    same = Segment("3", "Unchanged clause")
+    assert compare_pairs([Pair(same, same, 1.0)]) == []   # identical -> nothing
+
+
+def test_compare_pairs_wording_change():
+    old = Segment("4", "The vendor shall deliver the goods")
+    new = Segment("4", "The supplier shall deliver the goods")
+    changes = compare_pairs([Pair(old=old, new=new, similarity=0.8)])
+    assert changes[0].category == "Wording change"
+
+
+def test_summarize_changes_buckets_and_risk():
+    changes = compare_pairs([
+        Pair(Segment("1", "Payment within 30 days"),
+             Segment("1", "Payment within 45 days"), 0.9),
+        Pair(Segment("2", "Warranty period is 24 months"),
+             Segment("2", "Warranty period is 12 months"), 0.9),
+    ])
+    summary = summarize_changes(changes)
+    assert summary["total"] == 2
+    assert summary["commercial"]                              # payment change
+    assert any("arranty" in r for r in summary["risks"])     # warranty reduced
 
 
 # --- provider abstraction fallbacks ------------------------------------------
